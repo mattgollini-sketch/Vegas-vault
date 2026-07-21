@@ -1,0 +1,17 @@
+{
+  "name": "vegas-vault",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Vegas Vault — static trip countdown planner with an optional Node/Express backend for daily push notifications.",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "generate-vapid-keys": "web-push generate-vapid-keys"
+  },
+  "dependencies": {
+    "dotenv": "^16.4.5",
+    "express": "^4.19.2",
+    "node-cron": "^3.0.3",
+    "web-push": "^3.6.7"
+  }
+}

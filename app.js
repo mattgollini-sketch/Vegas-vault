@@ -369,6 +369,7 @@ function renderTipOfDay() {
 function refreshDerived() {
   renderHypeBanner();
   renderTonight();
+  syncPushIfSubscribed();
 }
 
 // ---------- Tabs ----------
@@ -847,9 +848,137 @@ async function fetchWeather(force = false) {
 
 document.getElementById("weatherRefresh").addEventListener("click", () => fetchWeather(true));
 
+// ---------- PWA install + push notifications ----------
+if ("serviceWorker" in navigator) {
+  navigator.serviceWorker.register("sw.js").catch((e) => console.warn("Service worker registration failed", e));
+}
+
+const PUSH_FLAG_KEY = "vegasVaultPushSubscribed";
+let pushSubscribed = localStorage.getItem(PUSH_FLAG_KEY) === "1";
+
+function urlBase64ToUint8Array(base64String) {
+  const padding = "=".repeat((4 - (base64String.length % 4)) % 4);
+  const base64 = (base64String + padding).replace(/-/g, "+").replace(/_/g, "/");
+  const rawData = atob(base64);
+  const outputArray = new Uint8Array(rawData.length);
+  for (let i = 0; i < rawData.length; i++) outputArray[i] = rawData.charCodeAt(i);
+  return outputArray;
+}
+
+function buildTripPayload() {
+  return {
+    tripName: state.tripName,
+    tripDate: state.tripDate,
+    hotelCheckIn: state.hotel.checkIn,
+    hotelCheckOut: state.hotel.checkOut,
+    reservations: state.reservations.map((r) => ({ category: r.category, name: r.name, date: r.date, time: r.time })),
+  };
+}
+
+function updateNotifyButton() {
+  const btn = document.getElementById("notifyBtn");
+  const status = document.getElementById("notifyStatus");
+  if (!btn) return;
+  btn.textContent = pushSubscribed ? "🔕 Disable daily notifications" : "🔔 Enable daily notifications";
+  btn.classList.toggle("subscribed", pushSubscribed);
+  if (status) {
+    status.textContent = pushSubscribed
+      ? "You'll get one push per day with your countdown + tonight's plans."
+      : "";
+  }
+}
+
+async function subscribeToPush() {
+  if (!("serviceWorker" in navigator) || !("PushManager" in window)) {
+    alert("This browser doesn't support push notifications.");
+    return;
+  }
+  try {
+    const permission = await Notification.requestPermission();
+    if (permission !== "granted") return;
+
+    const keyRes = await fetch("/api/vapid-public-key");
+    const { publicKey } = await keyRes.json();
+    if (!publicKey) {
+      alert(
+        "Push notifications aren't set up on this server yet. Generate VAPID keys and set them in .env (see README)."
+      );
+      return;
+    }
+
+    const registration = await navigator.serviceWorker.ready;
+    let subscription = await registration.pushManager.getSubscription();
+    if (!subscription) {
+      subscription = await registration.pushManager.subscribe({
+        userVisibleOnly: true,
+        applicationServerKey: urlBase64ToUint8Array(publicKey),
+      });
+    }
+
+    await fetch("/api/subscribe", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ subscription, trip: buildTripPayload() }),
+    });
+
+    pushSubscribed = true;
+    localStorage.setItem(PUSH_FLAG_KEY, "1");
+    updateNotifyButton();
+  } catch (e) {
+    console.warn("Push subscription failed", e);
+    alert("Could not enable notifications — see the browser console for details.");
+  }
+}
+
+async function unsubscribeFromPush() {
+  try {
+    const registration = await navigator.serviceWorker.ready;
+    const subscription = await registration.pushManager.getSubscription();
+    if (subscription) {
+      await fetch("/api/unsubscribe", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ endpoint: subscription.endpoint }),
+      });
+      await subscription.unsubscribe();
+    }
+  } catch (e) {
+    console.warn("Push unsubscribe failed", e);
+  }
+  pushSubscribed = false;
+  localStorage.setItem(PUSH_FLAG_KEY, "0");
+  updateNotifyButton();
+}
+
+async function syncPushIfSubscribed() {
+  if (!pushSubscribed || !("serviceWorker" in navigator)) return;
+  try {
+    const registration = await navigator.serviceWorker.ready;
+    const subscription = await registration.pushManager.getSubscription();
+    if (!subscription) return;
+    await fetch("/api/subscribe", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ subscription, trip: buildTripPayload() }),
+    });
+  } catch (e) {
+    console.warn("Push sync failed", e);
+  }
+}
+
+const notifyBtn = document.getElementById("notifyBtn");
+if (notifyBtn) {
+  notifyBtn.addEventListener("click", () => {
+    if (pushSubscribed) unsubscribeFromPush();
+    else subscribeToPush();
+  });
+}
+updateNotifyButton();
+
 // ---------- Reset ----------
-document.getElementById("resetBtn").addEventListener("click", () => {
+document.getElementById("resetBtn").addEventListener("click", async () => {
   if (!confirm("Reset all Vegas Vault data? This can't be undone.")) return;
+  if (pushSubscribed) await unsubscribeFromPush();
   localStorage.removeItem(STORAGE_KEY);
   location.reload();
 });

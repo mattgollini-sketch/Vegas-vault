@@ -5,6 +5,10 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <title>Vegas Vault — Trip Countdown Planner</title>
 <link rel="stylesheet" href="style.css" />
+<link rel="manifest" href="manifest.json" />
+<link rel="icon" href="icons/icon-192.png" />
+<link rel="apple-touch-icon" href="icons/icon-192.png" />
+<meta name="theme-color" content="#150f26" />
 </head>
 <body>
   <div class="glow glow-pink"></div>
@@ -172,7 +176,11 @@
   </main>
 
   <footer>
-    <button id="resetBtn">Reset all data</button>
+    <div class="footer-buttons">
+      <button id="notifyBtn" class="notify-btn">🔔 Enable daily notifications</button>
+      <button id="resetBtn">Reset all data</button>
+    </div>
+    <span id="notifyStatus" class="panel-hint"></span>
     <span>Everything is saved locally in your browser.</span>
   </footer>
 
