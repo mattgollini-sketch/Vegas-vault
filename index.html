@@ -1,0 +1,114 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Vegas Vault — Trip Countdown Planner</title>
+<link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <div class="glow glow-pink"></div>
+  <div class="glow glow-teal"></div>
+
+  <header class="topbar">
+    <h1>🎰 Vegas <span>Vault</span></h1>
+    <p class="tagline">Your countdown, your hotel, your hit list.</p>
+  </header>
+
+  <main>
+    <section class="countdown-card">
+      <div class="trip-setup">
+        <label>
+          Trip date &amp; time
+          <input type="datetime-local" id="tripDateInput" />
+        </label>
+        <label>
+          Trip name
+          <input type="text" id="tripNameInput" placeholder="e.g. Bachelor Weekend" />
+        </label>
+      </div>
+
+      <div class="countdown" id="countdown">
+        <div class="unit"><span id="days">00</span><small>days</small></div>
+        <div class="unit"><span id="hours">00</span><small>hrs</small></div>
+        <div class="unit"><span id="minutes">00</span><small>min</small></div>
+        <div class="unit"><span id="seconds">00</span><small>sec</small></div>
+      </div>
+      <p class="countdown-status" id="countdownStatus"></p>
+    </section>
+
+    <nav class="tabs" id="tabs">
+      <button class="tab-btn active" data-tab="hotel">🏨 Hotel</button>
+      <button class="tab-btn" data-tab="essentials">🎒 Essentials</button>
+      <button class="tab-btn" data-tab="restaurants">🍽️ Restaurants</button>
+      <button class="tab-btn" data-tab="shows">🎭 Shows</button>
+      <button class="tab-btn" data-tab="spas">💆 Spas</button>
+      <button class="tab-btn" data-tab="nightclubs">🥂 Nightclubs</button>
+    </nav>
+
+    <section class="panel active" id="panel-hotel">
+      <h2>Hotel Stay</h2>
+      <div class="hotel-grid">
+        <label>Hotel / Resort <input type="text" id="hotelName" placeholder="e.g. Bellagio" /></label>
+        <label>Confirmation # <input type="text" id="hotelConf" placeholder="e.g. ABC123456" /></label>
+        <label>Check-in <input type="date" id="hotelCheckIn" /></label>
+        <label>Check-out <input type="date" id="hotelCheckOut" /></label>
+        <label>Room type <input type="text" id="hotelRoom" placeholder="e.g. Fountain View King" /></label>
+        <label class="full">Notes <textarea id="hotelNotes" placeholder="Resort fees, parking, early check-in requests..."></textarea></label>
+      </div>
+    </section>
+
+    <section class="panel" id="panel-essentials">
+      <h2>Essentials Checklist</h2>
+      <div class="add-row">
+        <input type="text" id="essentialsInput" placeholder="Add an essential..." />
+        <button id="essentialsAdd">Add</button>
+      </div>
+      <ul class="checklist" id="essentialsList"></ul>
+    </section>
+
+    <section class="panel" id="panel-restaurants">
+      <h2>🍽️ Restaurants Bucket List</h2>
+      <div class="add-row">
+        <input type="text" id="restaurantsInput" placeholder="Add a restaurant..." />
+        <button data-list="restaurants" class="listAdd">Add</button>
+      </div>
+      <ul class="checklist" id="restaurantsList"></ul>
+    </section>
+
+    <section class="panel" id="panel-shows">
+      <h2>🎭 Shows Bucket List</h2>
+      <div class="add-row">
+        <input type="text" id="showsInput" placeholder="Add a show..." />
+        <button data-list="shows" class="listAdd">Add</button>
+      </div>
+      <ul class="checklist" id="showsList"></ul>
+    </section>
+
+    <section class="panel" id="panel-spas">
+      <h2>💆 Spas Bucket List</h2>
+      <div class="add-row">
+        <input type="text" id="spasInput" placeholder="Add a spa..." />
+        <button data-list="spas" class="listAdd">Add</button>
+      </div>
+      <ul class="checklist" id="spasList"></ul>
+    </section>
+
+    <section class="panel" id="panel-nightclubs">
+      <h2>🥂 Nightclubs Bucket List</h2>
+      <div class="add-row">
+        <input type="text" id="nightclubsInput" placeholder="Add a nightclub..." />
+        <button data-list="nightclubs" class="listAdd">Add</button>
+      </div>
+      <ul class="checklist" id="nightclubsList"></ul>
+    </section>
+  </main>
+
+  <footer>
+    <button id="resetBtn">Reset all data</button>
+    <span>Everything is saved locally in your browser.</span>
+  </footer>
+
+  <script src="app.js"></script>
+</body>
+</html>
