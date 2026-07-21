@@ -37,24 +37,73 @@
       <p class="countdown-status" id="countdownStatus"></p>
     </section>
 
+    <section class="hype-banner" id="hypeBanner"></section>
+
+    <section class="hype-grid">
+      <div class="hype-card" id="tonightCard">
+        <h3 id="tonightTitle">Tonight in Vegas</h3>
+        <div id="tonightBody"></div>
+      </div>
+      <div class="hype-card" id="tipCard">
+        <h3>💡 Vegas Tip of the Day</h3>
+        <p id="tipBody"></p>
+      </div>
+    </section>
+
     <nav class="tabs" id="tabs">
       <button class="tab-btn active" data-tab="hotel">🏨 Hotel</button>
+      <button class="tab-btn" data-tab="flights">✈️ Flights</button>
       <button class="tab-btn" data-tab="essentials">🎒 Essentials</button>
-      <button class="tab-btn" data-tab="restaurants">🍽️ Restaurants</button>
-      <button class="tab-btn" data-tab="shows">🎭 Shows</button>
-      <button class="tab-btn" data-tab="spas">💆 Spas</button>
-      <button class="tab-btn" data-tab="nightclubs">🥂 Nightclubs</button>
+      <button class="tab-btn" data-tab="restaurants" data-category="restaurants">🍽️ Restaurants</button>
+      <button class="tab-btn" data-tab="shows" data-category="shows">🎭 Shows</button>
+      <button class="tab-btn" data-tab="spas" data-category="spas">💆 Spas</button>
+      <button class="tab-btn" data-tab="nightclubs" data-category="nightclubs">🥂 Nightclubs</button>
+      <button class="tab-btn" data-tab="pool" data-category="pool">🏊 Pool</button>
+      <button class="tab-btn" data-tab="bankroll">💰 Bankroll</button>
+      <button class="tab-btn" data-tab="outfits">👗 Outfits</button>
+      <button class="tab-btn" data-tab="itinerary">🗓️ Itinerary</button>
+      <button class="tab-btn" data-tab="weather">☀️ Weather</button>
     </nav>
 
     <section class="panel active" id="panel-hotel">
       <h2>Hotel Stay</h2>
-      <div class="hotel-grid">
+      <div class="form-grid">
         <label>Hotel / Resort <input type="text" id="hotelName" placeholder="e.g. Bellagio" /></label>
         <label>Confirmation # <input type="text" id="hotelConf" placeholder="e.g. ABC123456" /></label>
         <label>Check-in <input type="date" id="hotelCheckIn" /></label>
         <label>Check-out <input type="date" id="hotelCheckOut" /></label>
         <label>Room type <input type="text" id="hotelRoom" placeholder="e.g. Fountain View King" /></label>
         <label class="full">Notes <textarea id="hotelNotes" placeholder="Resort fees, parking, early check-in requests..."></textarea></label>
+      </div>
+    </section>
+
+    <section class="panel" id="panel-flights">
+      <h2>Flight Info</h2>
+      <div class="flight-block">
+        <h3>Outbound ✈️</h3>
+        <div class="form-grid">
+          <label>Airline <input type="text" id="outAirline" /></label>
+          <label>Flight # <input type="text" id="outFlightNum" /></label>
+          <label>Date <input type="date" id="outDate" /></label>
+          <label>Departs <input type="time" id="outDepTime" /></label>
+          <label>Arrives <input type="time" id="outArrTime" /></label>
+          <label>From <input type="text" id="outFrom" placeholder="e.g. JFK" /></label>
+          <label>To <input type="text" id="outTo" placeholder="e.g. LAS" /></label>
+          <label>Confirmation # <input type="text" id="outConf" /></label>
+        </div>
+      </div>
+      <div class="flight-block">
+        <h3>Return ✈️</h3>
+        <div class="form-grid">
+          <label>Airline <input type="text" id="retAirline" /></label>
+          <label>Flight # <input type="text" id="retFlightNum" /></label>
+          <label>Date <input type="date" id="retDate" /></label>
+          <label>Departs <input type="time" id="retDepTime" /></label>
+          <label>Arrives <input type="time" id="retArrTime" /></label>
+          <label>From <input type="text" id="retFrom" placeholder="e.g. LAS" /></label>
+          <label>To <input type="text" id="retTo" placeholder="e.g. JFK" /></label>
+          <label>Confirmation # <input type="text" id="retConf" /></label>
+        </div>
       </div>
     </section>
 
@@ -67,40 +116,58 @@
       <ul class="checklist" id="essentialsList"></ul>
     </section>
 
-    <section class="panel" id="panel-restaurants">
-      <h2>🍽️ Restaurants Bucket List</h2>
-      <div class="add-row">
-        <input type="text" id="restaurantsInput" placeholder="Add a restaurant..." />
-        <button data-list="restaurants" class="listAdd">Add</button>
+    <section class="panel" id="panel-reservations">
+      <h2 id="resTitle">Reservations</h2>
+      <p class="panel-hint" id="resHint"></p>
+      <div class="add-row res-add-row">
+        <input type="text" id="resNameInput" placeholder="Name..." />
+        <input type="date" id="resDateInput" />
+        <input type="time" id="resTimeInput" />
+        <input type="text" id="resConfInput" placeholder="Conf # (optional)" />
+        <button id="resAdd">Add</button>
       </div>
-      <ul class="checklist" id="restaurantsList"></ul>
+      <ul class="checklist" id="resList"></ul>
     </section>
 
-    <section class="panel" id="panel-shows">
-      <h2>🎭 Shows Bucket List</h2>
-      <div class="add-row">
-        <input type="text" id="showsInput" placeholder="Add a show..." />
-        <button data-list="shows" class="listAdd">Add</button>
+    <section class="panel" id="panel-bankroll">
+      <h2>💰 Gambling Bankroll Tracker</h2>
+      <div class="form-grid">
+        <label>Starting bankroll ($) <input type="number" id="bankrollStart" step="1" /></label>
       </div>
-      <ul class="checklist" id="showsList"></ul>
+      <div class="bankroll-total" id="bankrollTotal"></div>
+      <div class="add-row bankroll-add-row">
+        <input type="date" id="bankrollDate" />
+        <input type="text" id="bankrollLabel" placeholder="e.g. Blackjack, Bellagio" />
+        <input type="number" id="bankrollAmount" placeholder="+/- amount" step="1" />
+        <button id="bankrollAdd">Log</button>
+      </div>
+      <ul class="checklist" id="bankrollList"></ul>
     </section>
 
-    <section class="panel" id="panel-spas">
-      <h2>💆 Spas Bucket List</h2>
-      <div class="add-row">
-        <input type="text" id="spasInput" placeholder="Add a spa..." />
-        <button data-list="spas" class="listAdd">Add</button>
+    <section class="panel" id="panel-outfits">
+      <h2>👗 Outfit Planner</h2>
+      <div class="add-row outfit-add-row">
+        <input type="date" id="outfitDate" />
+        <input type="text" id="outfitLabel" placeholder="e.g. Night 1 - Club" />
+        <input type="text" id="outfitDesc" placeholder="Outfit description" />
+        <button id="outfitAdd">Add</button>
       </div>
-      <ul class="checklist" id="spasList"></ul>
+      <ul class="checklist" id="outfitsList"></ul>
     </section>
 
-    <section class="panel" id="panel-nightclubs">
-      <h2>🥂 Nightclubs Bucket List</h2>
+    <section class="panel" id="panel-itinerary">
+      <h2>🗓️ Group Itinerary</h2>
+      <p class="panel-hint">Auto-built from your hotel dates, flights, reservations, and outfits.</p>
+      <div id="itineraryBody"></div>
+    </section>
+
+    <section class="panel" id="panel-weather">
+      <h2>☀️ Las Vegas Weather</h2>
       <div class="add-row">
-        <input type="text" id="nightclubsInput" placeholder="Add a nightclub..." />
-        <button data-list="nightclubs" class="listAdd">Add</button>
+        <button id="weatherRefresh">Refresh forecast</button>
+        <span class="panel-hint" id="weatherUpdated"></span>
       </div>
-      <ul class="checklist" id="nightclubsList"></ul>
+      <div id="weatherBody" class="weather-grid"></div>
     </section>
   </main>
 
