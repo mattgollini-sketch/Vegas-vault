@@ -17,6 +17,7 @@
   <header class="topbar">
     <h1>🎰 Vegas <span>Vault</span></h1>
     <p class="tagline">Your countdown, your hotel, your hit list.</p>
+    <p class="account-bar" id="accountBar"></p>
   </header>
 
   <main>
@@ -55,6 +56,7 @@
     </section>
 
     <nav class="tabs" id="tabs">
+      <button class="tab-btn" data-tab="account">👤 Account</button>
       <button class="tab-btn active" data-tab="hotel">🏨 Hotel</button>
       <button class="tab-btn" data-tab="flights">✈️ Flights</button>
       <button class="tab-btn" data-tab="essentials">🎒 Essentials</button>
@@ -68,6 +70,61 @@
       <button class="tab-btn" data-tab="itinerary">🗓️ Itinerary</button>
       <button class="tab-btn" data-tab="weather">☀️ Weather</button>
     </nav>
+
+    <section class="panel" id="panel-account">
+      <h2>👤 Account</h2>
+
+      <div id="importBanner" class="import-banner" hidden>
+        <p>You've got trip data saved on this device that isn't in your account yet.</p>
+        <div class="add-row">
+          <button id="importAcceptBtn">Import it into my account</button>
+          <button id="importDismissBtn" class="secondary-btn">No thanks</button>
+        </div>
+      </div>
+
+      <div id="inviteBanner" class="import-banner" hidden>
+        <p id="inviteBannerText"></p>
+        <div class="add-row">
+          <button id="inviteAcceptBtn">Join this Vault</button>
+          <button id="inviteDismissBtn" class="secondary-btn">Dismiss</button>
+        </div>
+      </div>
+
+      <div id="loggedOutView">
+        <p class="panel-hint">
+          Sign in to sync this Vault across your devices and invite your group to plan together.
+          Without an account, everything just stays in this browser.
+        </p>
+        <form id="authForm" class="form-grid">
+          <label class="full">Email <input type="email" id="authEmail" autocomplete="email" required /></label>
+          <label class="full">Password <input type="password" id="authPassword" autocomplete="current-password" required minlength="8" /></label>
+        </form>
+        <p class="form-error" id="authError"></p>
+        <div class="add-row">
+          <button id="authSubmitBtn" type="button">Sign up</button>
+          <button id="authToggleBtn" type="button" class="secondary-btn">Already have an account? Log in</button>
+        </div>
+      </div>
+
+      <div id="loggedInView" hidden>
+        <p>Signed in as <strong id="accountEmail"></strong></p>
+
+        <label class="vault-switcher-label" for="vaultSwitcher" id="vaultSwitcherWrap" hidden>
+          Viewing Vault
+          <select id="vaultSwitcher"></select>
+        </label>
+
+        <div class="add-row">
+          <button id="inviteBtn">Invite someone to this Vault</button>
+          <button id="logoutBtn" class="secondary-btn">Log out</button>
+        </div>
+        <div id="inviteLinkWrap" class="add-row" hidden>
+          <input type="text" id="inviteLinkInput" readonly />
+          <button id="inviteCopyBtn">Copy link</button>
+        </div>
+        <p class="panel-hint">Anyone with the link can sign up or log in and join this Vault.</p>
+      </div>
+    </section>
 
     <section class="panel active" id="panel-hotel">
       <h2>Hotel Stay</h2>

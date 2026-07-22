@@ -79,22 +79,10 @@ function makeReservation(category, name) {
 }
 
 // ---------- Load / migrate / save ----------
-function loadData() {
-  let raw;
-  try {
-    raw = localStorage.getItem(STORAGE_KEY);
-  } catch (e) {
-    return structuredClone(defaultData);
-  }
-  if (!raw) return structuredClone(defaultData);
-
-  let parsed;
-  try {
-    parsed = JSON.parse(raw);
-  } catch (e) {
-    console.warn("Failed to parse saved data, starting fresh.", e);
-    return structuredClone(defaultData);
-  }
+// Shared by localStorage-loaded data and server-loaded Vault data, so both
+// paths always end up with the same well-formed shape.
+function mergeWithDefaults(parsed) {
+  if (!parsed || typeof parsed !== "object") return structuredClone(defaultData);
 
   // Migrate from v1 shape (lists.essentials / lists.restaurants etc, no categories)
   if (parsed.lists && !parsed.reservations) {
@@ -137,11 +125,80 @@ function loadData() {
   };
 }
 
-function saveData() {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+// True once real (non-default) trip info exists, used for the "import your
+// local data" prompt after signing in.
+function hasMeaningfulData(s) {
+  if (!s) return false;
+  if (s.tripDate || s.tripName) return true;
+  if (s.hotel && (s.hotel.name || s.hotel.checkIn || s.hotel.checkOut)) return true;
+  if ((s.reservations || []).some((r) => r.date || r.conf)) return true;
+  if ((s.outfits || []).length) return true;
+  if ((s.bankroll && s.bankroll.entries || []).length) return true;
+  return false;
 }
 
-let state = loadData();
+function loadLocalData() {
+  let raw;
+  try {
+    raw = localStorage.getItem(STORAGE_KEY);
+  } catch (e) {
+    return structuredClone(defaultData);
+  }
+  if (!raw) return structuredClone(defaultData);
+  try {
+    return mergeWithDefaults(JSON.parse(raw));
+  } catch (e) {
+    console.warn("Failed to parse saved data, starting fresh.", e);
+    return structuredClone(defaultData);
+  }
+}
+
+let serverSyncTimer = null;
+
+function saveData() {
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+  if (currentVaultId) {
+    clearTimeout(serverSyncTimer);
+    serverSyncTimer = setTimeout(syncStateToServer, 800);
+  }
+}
+
+async function syncStateToServer() {
+  if (!currentVaultId) return;
+  try {
+    await fetch(`/api/vault/${currentVaultId}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ state }),
+    });
+  } catch (e) {
+    console.warn("Vault sync failed", e);
+  }
+}
+
+let state = loadLocalData();
+
+// Re-reads every field/list from `state` — used after loading a different
+// Vault (login, vault switch, import) so the whole UI reflects it.
+function populateAllFields() {
+  tripDateInput.value = state.tripDate || "";
+  tripNameInput.value = state.tripName || "";
+  Object.entries(hotelFieldMap).forEach(([elId, key]) => {
+    document.getElementById(elId).value = state.hotel[key] || "";
+  });
+  Object.entries(flightFieldMap).forEach(([elId, [leg, key]]) => {
+    document.getElementById(elId).value = state.flights[leg][key] || "";
+  });
+  bankrollStartInput.value = state.bankroll.starting || 0;
+
+  renderEssentials();
+  renderReservations();
+  renderBankroll();
+  renderOutfits();
+  renderItinerary();
+  updateCountdown();
+  refreshDerived();
+}
 
 // ---------- Date / format helpers ----------
 function todayStr() {
@@ -369,7 +426,6 @@ function renderTipOfDay() {
 function refreshDerived() {
   renderHypeBanner();
   renderTonight();
-  syncPushIfSubscribed();
 }
 
 // ---------- Tabs ----------
@@ -865,16 +921,6 @@ function urlBase64ToUint8Array(base64String) {
   return outputArray;
 }
 
-function buildTripPayload() {
-  return {
-    tripName: state.tripName,
-    tripDate: state.tripDate,
-    hotelCheckIn: state.hotel.checkIn,
-    hotelCheckOut: state.hotel.checkOut,
-    reservations: state.reservations.map((r) => ({ category: r.category, name: r.name, date: r.date, time: r.time })),
-  };
-}
-
 function updateNotifyButton() {
   const btn = document.getElementById("notifyBtn");
   const status = document.getElementById("notifyStatus");
@@ -889,6 +935,10 @@ function updateNotifyButton() {
 }
 
 async function subscribeToPush() {
+  if (!currentUser) {
+    alert("Sign in first (Account tab) so we know which Vault to notify you about.");
+    return;
+  }
   if (!("serviceWorker" in navigator) || !("PushManager" in window)) {
     alert("This browser doesn't support push notifications.");
     return;
@@ -915,11 +965,15 @@ async function subscribeToPush() {
       });
     }
 
-    await fetch("/api/subscribe", {
+    const res = await fetch("/api/subscribe", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ subscription, trip: buildTripPayload() }),
+      body: JSON.stringify({ subscription }),
     });
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}));
+      throw new Error(body.error || "Subscribe request failed");
+    }
 
     pushSubscribed = true;
     localStorage.setItem(PUSH_FLAG_KEY, "1");
@@ -950,22 +1004,6 @@ async function unsubscribeFromPush() {
   updateNotifyButton();
 }
 
-async function syncPushIfSubscribed() {
-  if (!pushSubscribed || !("serviceWorker" in navigator)) return;
-  try {
-    const registration = await navigator.serviceWorker.ready;
-    const subscription = await registration.pushManager.getSubscription();
-    if (!subscription) return;
-    await fetch("/api/subscribe", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ subscription, trip: buildTripPayload() }),
-    });
-  } catch (e) {
-    console.warn("Push sync failed", e);
-  }
-}
-
 const notifyBtn = document.getElementById("notifyBtn");
 if (notifyBtn) {
   notifyBtn.addEventListener("click", () => {
@@ -975,12 +1013,271 @@ if (notifyBtn) {
 }
 updateNotifyButton();
 
+// ---------- Account (signup / login / shared Vaults) ----------
+let currentUser = null; // { id, email } | null
+let currentVaultId = null;
+let currentVaults = []; // [{ id, name, role }]
+let authMode = "signup";
+let pendingImportSnapshot = null;
+const pendingInviteToken = new URLSearchParams(location.search).get("invite");
+
+const loggedOutView = document.getElementById("loggedOutView");
+const loggedInView = document.getElementById("loggedInView");
+const authForm = document.getElementById("authForm");
+const authEmailInput = document.getElementById("authEmail");
+const authPasswordInput = document.getElementById("authPassword");
+const authError = document.getElementById("authError");
+const authSubmitBtn = document.getElementById("authSubmitBtn");
+const authToggleBtn = document.getElementById("authToggleBtn");
+const vaultSwitcherWrap = document.getElementById("vaultSwitcherWrap");
+const vaultSwitcher = document.getElementById("vaultSwitcher");
+const importBanner = document.getElementById("importBanner");
+const inviteBanner = document.getElementById("inviteBanner");
+
+function renderAccountBar() {
+  const bar = document.getElementById("accountBar");
+  if (!currentUser) {
+    bar.textContent = "Not signed in — this trip is only saved on this device.";
+    return;
+  }
+  const vault = currentVaults.find((v) => v.id === currentVaultId);
+  const vaultName = vault ? vault.name : "your Vault";
+  bar.innerHTML = `Signed in as <strong>${escapeHtml(currentUser.email)}</strong> · syncing "${escapeHtml(vaultName)}"`;
+}
+
+function renderAccountView() {
+  loggedOutView.hidden = !!currentUser;
+  loggedInView.hidden = !currentUser;
+
+  if (currentUser) {
+    document.getElementById("accountEmail").textContent = currentUser.email;
+    vaultSwitcherWrap.hidden = currentVaults.length < 2;
+    vaultSwitcher.innerHTML = currentVaults
+      .map((v) => `<option value="${v.id}" ${v.id === currentVaultId ? "selected" : ""}>${escapeHtml(v.name)} (${v.role})</option>`)
+      .join("");
+    document.getElementById("inviteLinkWrap").hidden = true;
+  } else {
+    authSubmitBtn.textContent = authMode === "signup" ? "Sign up" : "Log in";
+    authToggleBtn.textContent =
+      authMode === "signup" ? "Already have an account? Log in" : "New here? Sign up";
+  }
+  renderAccountBar();
+}
+
+function setAccountFromMeResponse(data) {
+  currentUser = data.user;
+  currentVaults = data.vaults || [];
+  currentVaultId = data.activeVaultId || null;
+}
+
+async function loadActiveVaultFromServer() {
+  if (!currentVaultId) return;
+  try {
+    const res = await fetch(`/api/vault/${currentVaultId}`);
+    if (!res.ok) throw new Error("Failed to load Vault");
+    const data = await res.json();
+    const serverState = mergeWithDefaults(data.state);
+
+    if (!hasMeaningfulData(serverState) && hasMeaningfulData(pendingImportSnapshot)) {
+      importBanner.hidden = false;
+    } else {
+      importBanner.hidden = true;
+      pendingImportSnapshot = null;
+    }
+
+    state = serverState;
+    populateAllFields();
+  } catch (e) {
+    console.warn("Failed to load Vault from server", e);
+  }
+}
+
+async function refreshMe() {
+  try {
+    const res = await fetch("/api/me");
+    const data = await res.json();
+    if (data.user) {
+      setAccountFromMeResponse(data);
+      await loadActiveVaultFromServer();
+    }
+  } catch (e) {
+    console.warn("Failed to check sign-in state", e);
+  }
+  renderAccountView();
+  await maybeShowInviteBanner();
+}
+
+authToggleBtn.addEventListener("click", () => {
+  authMode = authMode === "signup" ? "login" : "signup";
+  authError.textContent = "";
+  renderAccountView();
+});
+
+async function handleAuthSubmit() {
+  authError.textContent = "";
+  const email = authEmailInput.value.trim();
+  const password = authPasswordInput.value;
+  const endpoint = authMode === "signup" ? "/api/auth/signup" : "/api/auth/login";
+
+  try {
+    const res = await fetch(endpoint, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email, password }),
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      authError.textContent = data.error || "Something went wrong.";
+      return;
+    }
+
+    pendingImportSnapshot = hasMeaningfulData(state) ? structuredClone(state) : null;
+    setAccountFromMeResponse(data);
+    await loadActiveVaultFromServer();
+    renderAccountView();
+    await maybeShowInviteBanner();
+    authPasswordInput.value = "";
+  } catch (e) {
+    authError.textContent = "Couldn't reach the server. Is it running?";
+  }
+}
+
+authForm.addEventListener("submit", (e) => {
+  e.preventDefault();
+  handleAuthSubmit();
+});
+authSubmitBtn.addEventListener("click", handleAuthSubmit);
+
+document.getElementById("logoutBtn").addEventListener("click", async () => {
+  try {
+    await fetch("/api/auth/logout", { method: "POST" });
+  } catch (e) {
+    console.warn("Logout request failed", e);
+  }
+  currentUser = null;
+  currentVaultId = null;
+  currentVaults = [];
+  state = loadLocalData();
+  populateAllFields();
+  renderAccountView();
+});
+
+vaultSwitcher.addEventListener("change", async () => {
+  const vaultId = vaultSwitcher.value;
+  try {
+    const res = await fetch("/api/me/active-vault", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ vaultId }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || "Failed to switch Vault");
+    setAccountFromMeResponse(data);
+    await loadActiveVaultFromServer();
+    renderAccountView();
+  } catch (e) {
+    alert("Could not switch Vaults — see console for details.");
+    console.warn(e);
+  }
+});
+
+document.getElementById("inviteBtn").addEventListener("click", async () => {
+  if (!currentVaultId) return;
+  try {
+    const res = await fetch(`/api/vault/${currentVaultId}/invite`, { method: "POST" });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || "Failed to create invite");
+    const wrap = document.getElementById("inviteLinkWrap");
+    const input = document.getElementById("inviteLinkInput");
+    input.value = `${location.origin}${data.path}`;
+    wrap.hidden = false;
+    input.select();
+  } catch (e) {
+    alert("Could not create an invite link — see console for details.");
+    console.warn(e);
+  }
+});
+
+document.getElementById("inviteCopyBtn").addEventListener("click", async () => {
+  const input = document.getElementById("inviteLinkInput");
+  input.select();
+  try {
+    await navigator.clipboard.writeText(input.value);
+  } catch (e) {
+    document.execCommand("copy");
+  }
+});
+
+document.getElementById("importAcceptBtn").addEventListener("click", () => {
+  if (!pendingImportSnapshot) return;
+  state = pendingImportSnapshot;
+  pendingImportSnapshot = null;
+  saveData();
+  populateAllFields();
+  importBanner.hidden = true;
+});
+
+document.getElementById("importDismissBtn").addEventListener("click", () => {
+  pendingImportSnapshot = null;
+  importBanner.hidden = true;
+});
+
+// ---------- Invite acceptance (?invite=TOKEN in the URL) ----------
+async function maybeShowInviteBanner() {
+  if (!pendingInviteToken) return;
+  try {
+    const res = await fetch(`/api/invite/${pendingInviteToken}`);
+    const data = await res.json();
+    if (!res.ok) {
+      inviteBanner.hidden = true;
+      return;
+    }
+    document.getElementById("inviteBannerText").textContent = currentUser
+      ? `You've been invited to join "${data.vaultName}".`
+      : `You've been invited to join "${data.vaultName}". Sign up or log in below, then click Join.`;
+    inviteBanner.hidden = false;
+    tabButtons.forEach((b) => b.dataset.tab === "account" && b.click());
+  } catch (e) {
+    console.warn("Failed to look up invite", e);
+  }
+}
+
+document.getElementById("inviteAcceptBtn").addEventListener("click", async () => {
+  if (!currentUser) {
+    alert("Sign up or log in first, then click Join again.");
+    return;
+  }
+  try {
+    const res = await fetch(`/api/invite/${pendingInviteToken}/accept`, { method: "POST" });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || "Failed to join Vault");
+    setAccountFromMeResponse(data);
+    await loadActiveVaultFromServer();
+    renderAccountView();
+    inviteBanner.hidden = true;
+    history.replaceState(null, "", location.pathname);
+  } catch (e) {
+    alert(e.message || "Could not join that Vault.");
+  }
+});
+
+document.getElementById("inviteDismissBtn").addEventListener("click", () => {
+  inviteBanner.hidden = true;
+  history.replaceState(null, "", location.pathname);
+});
+
 // ---------- Reset ----------
 document.getElementById("resetBtn").addEventListener("click", async () => {
-  if (!confirm("Reset all Vegas Vault data? This can't be undone.")) return;
+  if (!confirm("Reset all Vegas Vault data on this device? This can't be undone.")) return;
   if (pushSubscribed) await unsubscribeFromPush();
   localStorage.removeItem(STORAGE_KEY);
-  location.reload();
+  if (currentUser) {
+    state = structuredClone(defaultData);
+    saveData();
+    populateAllFields();
+  } else {
+    location.reload();
+  }
 });
 
 // ---------- Initial render ----------
@@ -991,3 +1288,4 @@ renderOutfits();
 renderTipOfDay();
 updateCountdown();
 refreshDerived();
+refreshMe();

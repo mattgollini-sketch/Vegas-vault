@@ -12,6 +12,7 @@
 }
 
 * { box-sizing: border-box; }
+[hidden] { display: none !important; }
 
 body {
   margin: 0;
@@ -54,6 +55,8 @@ header.topbar h1 span {
   color: transparent;
 }
 .tagline { color: var(--muted); margin-top: 0.25rem; }
+.account-bar { color: var(--muted); font-size: 0.85rem; margin-top: 0.5rem; }
+.account-bar strong { color: var(--teal); }
 
 main {
   position: relative;
@@ -276,6 +279,38 @@ textarea { resize: vertical; min-height: 60px; }
   white-space: nowrap;
 }
 .add-row button:hover, footer button:hover { filter: brightness(1.1); }
+
+.secondary-btn {
+  background: #0f0a1c !important;
+  color: var(--text) !important;
+  border: 1px solid var(--card-border);
+}
+
+.form-error {
+  color: var(--red);
+  font-size: 0.85rem;
+  min-height: 1.1em;
+  margin: 0 0 0.75rem;
+}
+
+.import-banner {
+  background: rgba(255, 207, 92, 0.1);
+  border: 1px solid var(--gold);
+  border-radius: 14px;
+  padding: 1rem;
+  margin-bottom: 1.25rem;
+}
+.import-banner p { margin: 0 0 0.75rem; }
+
+.vault-switcher-label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  font-size: 0.85rem;
+  color: var(--muted);
+  max-width: 320px;
+  margin-bottom: 1rem;
+}
 
 .checklist {
   list-style: none;

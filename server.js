@@ -1,13 +1,17 @@
 require("dotenv").config();
 const express = require("express");
+const cookieParser = require("cookie-parser");
 const path = require("path");
-const fs = require("fs");
 const webpush = require("web-push");
 const cron = require("node-cron");
 
+const { readCollection, writeCollection } = require("./db");
+const auth = require("./auth");
+const users = require("./users");
+const vaults = require("./vaults");
+
 const app = express();
 const PORT = process.env.PORT || 3000;
-const DATA_FILE = path.join(__dirname, "data", "subscriptions.json");
 
 const VAPID_PUBLIC_KEY = process.env.VAPID_PUBLIC_KEY || "";
 const VAPID_PRIVATE_KEY = process.env.VAPID_PRIVATE_KEY || "";
@@ -23,55 +27,155 @@ if (vapidConfigured) {
 }
 
 app.use(express.json());
+app.use(cookieParser());
+app.use(auth.attachUser);
 app.use(express.static(__dirname));
 
-// ---------- Subscription storage (flat JSON file) ----------
-function loadSubs() {
-  try {
-    return JSON.parse(fs.readFileSync(DATA_FILE, "utf8"));
-  } catch (e) {
-    return [];
+// ---------- Auth ----------
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+function meResponse(user) {
+  return {
+    user,
+    vaults: vaults.getVaultsForUser(user.id),
+    activeVaultId: users.findUserById(user.id).activeVaultId,
+  };
+}
+
+app.post("/api/auth/signup", (req, res) => {
+  const { email, password } = req.body || {};
+  if (!email || !EMAIL_RE.test(String(email))) {
+    return res.status(400).json({ error: "Enter a valid email address." });
   }
-}
+  if (!password || String(password).length < 8) {
+    return res.status(400).json({ error: "Password must be at least 8 characters." });
+  }
+  if (users.findUserByEmail(email)) {
+    return res.status(409).json({ error: "An account with that email already exists." });
+  }
 
-function saveSubs(subs) {
-  fs.mkdirSync(path.dirname(DATA_FILE), { recursive: true });
-  fs.writeFileSync(DATA_FILE, JSON.stringify(subs, null, 2));
-}
+  const passwordHash = auth.hashPassword(password);
+  const user = users.createUser(email, passwordHash);
+  const vault = vaults.createVault("My Vegas Trip");
+  vaults.addMembership(vault.id, user.id, "owner");
+  users.setActiveVault(user.id, vault.id);
 
-// ---------- API ----------
+  const sessionId = auth.createSession(user.id);
+  res.cookie(auth.SESSION_COOKIE, sessionId, auth.cookieOptions());
+  res.status(201).json(meResponse(auth.publicUser(user)));
+});
+
+app.post("/api/auth/login", (req, res) => {
+  const { email, password } = req.body || {};
+  const user = email ? users.findUserByEmail(email) : null;
+  if (!user || !auth.verifyPassword(String(password || ""), user.passwordHash)) {
+    return res.status(401).json({ error: "Invalid email or password." });
+  }
+
+  const sessionId = auth.createSession(user.id);
+  res.cookie(auth.SESSION_COOKIE, sessionId, auth.cookieOptions());
+  res.json(meResponse(auth.publicUser(user)));
+});
+
+app.post("/api/auth/logout", (req, res) => {
+  if (req.sessionId) auth.destroySession(req.sessionId);
+  res.clearCookie(auth.SESSION_COOKIE);
+  res.json({ ok: true });
+});
+
+app.get("/api/me", (req, res) => {
+  if (!req.user) return res.json({ user: null });
+  res.json(meResponse(req.user));
+});
+
+app.put("/api/me/active-vault", auth.requireAuth, (req, res) => {
+  const { vaultId } = req.body || {};
+  if (!vaults.getMembership(vaultId, req.user.id)) {
+    return res.status(403).json({ error: "You're not a member of that Vault." });
+  }
+  users.setActiveVault(req.user.id, vaultId);
+  res.json(meResponse(req.user));
+});
+
+// ---------- Vault sync ----------
+app.get("/api/vault/:id", auth.requireAuth, (req, res) => {
+  const membership = vaults.getMembership(req.params.id, req.user.id);
+  if (!membership) return res.status(403).json({ error: "You're not a member of that Vault." });
+  const vault = vaults.getVault(req.params.id);
+  if (!vault) return res.status(404).json({ error: "Vault not found." });
+  res.json({ id: vault.id, name: vault.name, state: vault.state, role: membership.role });
+});
+
+app.put("/api/vault/:id", auth.requireAuth, (req, res) => {
+  const membership = vaults.getMembership(req.params.id, req.user.id);
+  if (!membership) return res.status(403).json({ error: "You're not a member of that Vault." });
+  const { state } = req.body || {};
+  if (typeof state !== "object" || state === null) {
+    return res.status(400).json({ error: "Missing state." });
+  }
+  const vault = vaults.saveVaultState(req.params.id, state);
+  res.json({ ok: true, updatedAt: vault.updatedAt });
+});
+
+// ---------- Sharing ----------
+app.post("/api/vault/:id/invite", auth.requireAuth, (req, res) => {
+  const membership = vaults.getMembership(req.params.id, req.user.id);
+  if (!membership) return res.status(403).json({ error: "You're not a member of that Vault." });
+  const invite = vaults.createInvite(req.params.id, req.user.id);
+  res.status(201).json({ token: invite.token, path: `/?invite=${invite.token}` });
+});
+
+app.get("/api/invite/:token", (req, res) => {
+  const invite = vaults.getInvite(req.params.token);
+  if (!invite) return res.status(404).json({ error: "This invite link is invalid or has expired." });
+  const vault = vaults.getVault(invite.vaultId);
+  if (!vault) return res.status(404).json({ error: "This Vault no longer exists." });
+  res.json({ vaultName: vault.name });
+});
+
+app.post("/api/invite/:token/accept", auth.requireAuth, (req, res) => {
+  const invite = vaults.getInvite(req.params.token);
+  if (!invite) return res.status(404).json({ error: "This invite link is invalid or has expired." });
+  vaults.addMembership(invite.vaultId, req.user.id, "member");
+  users.setActiveVault(req.user.id, invite.vaultId);
+  res.json(meResponse(req.user));
+});
+
+// ---------- Push notifications ----------
 app.get("/api/vapid-public-key", (req, res) => {
   res.json({ publicKey: vapidConfigured ? VAPID_PUBLIC_KEY : null });
 });
 
-app.post("/api/subscribe", (req, res) => {
-  const { subscription, trip } = req.body || {};
+app.post("/api/subscribe", auth.requireAuth, (req, res) => {
+  const { subscription } = req.body || {};
   if (!subscription || !subscription.endpoint) {
     return res.status(400).json({ error: "Missing subscription" });
   }
-  const subs = loadSubs();
+  const vaultId = users.findUserById(req.user.id).activeVaultId;
+  if (!vaultId) return res.status(400).json({ error: "No active Vault to notify you about." });
+
+  const subs = readCollection("subscriptions");
   const idx = subs.findIndex((s) => s.subscription.endpoint === subscription.endpoint);
-  const record = { subscription, trip: trip || {}, updatedAt: new Date().toISOString() };
+  const record = { subscription, vaultId, userId: req.user.id, updatedAt: new Date().toISOString() };
   if (idx >= 0) subs[idx] = record;
   else subs.push(record);
-  saveSubs(subs);
+  writeCollection("subscriptions", subs);
   res.status(201).json({ ok: true });
 });
 
 app.post("/api/unsubscribe", (req, res) => {
   const { endpoint } = req.body || {};
-  const subs = loadSubs().filter((s) => s.subscription.endpoint !== endpoint);
-  saveSubs(subs);
+  const subs = readCollection("subscriptions").filter((s) => s.subscription.endpoint !== endpoint);
+  writeCollection("subscriptions", subs);
   res.json({ ok: true });
 });
 
-// Manual trigger for local testing, so you don't have to wait for the cron hour.
 app.post("/api/send-now", async (req, res) => {
   const result = await sendDailyNotifications();
   res.json(result);
 });
 
-// ---------- Daily hype message (server-side mirror of the client's logic) ----------
+// ---------- Daily hype message, computed from the Vault's live saved state ----------
 const VEGAS_TIPS = [
   "Casino floors are designed with no clocks or windows — set a phone alarm if you need to keep track of time.",
   "Rideshare pickup at the airport and big Strip resorts can involve a walk to a dedicated lot — budget extra time.",
@@ -103,29 +207,31 @@ function tipOfDay() {
   return VEGAS_TIPS[dayOfYear % VEGAS_TIPS.length];
 }
 
-// Returns { title, body } to send, or null if nothing should be sent today
-// (e.g. the trip is over, or there isn't enough data to say anything useful).
-function buildMessageForTrip(trip) {
+// vaultState is the exact JSON blob the client keeps in localStorage / PUTs to
+// /api/vault/:id, so this reads the same shape app.js does client-side.
+function buildMessageForVault(vaultState) {
+  const state = vaultState || {};
+  const hotel = state.hotel || {};
   const today = todayStr();
-  const checkIn = trip.hotelCheckIn;
-  const checkOut = trip.hotelCheckOut;
+  const checkIn = hotel.checkIn;
+  const checkOut = hotel.checkOut;
 
   let phase = "unknown";
   if (checkIn && checkOut) {
     if (today < checkIn) phase = "before";
     else if (today > checkOut) phase = "after";
     else phase = "during";
-  } else if (trip.tripDate) {
-    const tripDateOnly = trip.tripDate.slice(0, 10);
+  } else if (state.tripDate) {
+    const tripDateOnly = state.tripDate.slice(0, 10);
     if (today < tripDateOnly) phase = "before";
     else if (today > tripDateOnly) phase = "after";
     else phase = "during";
   }
 
-  const name = trip.tripName || "your Vegas trip";
+  const name = state.tripName || "your Vegas trip";
 
   if (phase === "during") {
-    const todays = (trip.reservations || [])
+    const todays = (state.reservations || [])
       .filter((r) => r.date === today)
       .sort((a, b) => (a.time || "99:99").localeCompare(b.time || "99:99"));
     if (todays.length) {
@@ -141,7 +247,7 @@ function buildMessageForTrip(trip) {
   if (phase === "after") return null; // stop notifying once the trip has ended
 
   if (phase === "before") {
-    const target = checkIn ? new Date(`${checkIn}T00:00`) : trip.tripDate ? new Date(trip.tripDate) : null;
+    const target = checkIn ? new Date(`${checkIn}T00:00`) : state.tripDate ? new Date(state.tripDate) : null;
     if (!target || Number.isNaN(target.getTime())) return null;
     const daysLeft = Math.ceil((target.getTime() - Date.now()) / 86400000);
     if (daysLeft <= 0) return { title: "🎉 Today's the day!", body: `${name} starts today. ${tipOfDay()}` };
@@ -152,15 +258,15 @@ function buildMessageForTrip(trip) {
 }
 
 async function sendDailyNotifications() {
-  if (!vapidConfigured) {
-    return { ok: false, reason: "VAPID keys not configured" };
-  }
-  const subs = loadSubs();
+  if (!vapidConfigured) return { ok: false, reason: "VAPID keys not configured" };
+
+  const subs = readCollection("subscriptions");
   const survivors = [];
   let sent = 0;
 
   for (const record of subs) {
-    const message = buildMessageForTrip(record.trip || {});
+    const vault = vaults.getVault(record.vaultId);
+    const message = vault ? buildMessageForVault(vault.state) : null;
     if (!message) {
       survivors.push(record);
       continue;
@@ -179,7 +285,7 @@ async function sendDailyNotifications() {
     }
   }
 
-  saveSubs(survivors);
+  writeCollection("subscriptions", survivors);
   return { ok: true, sent, total: subs.length };
 }
 
