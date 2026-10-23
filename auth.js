@@ -1,16 +1,33 @@
+"use strict";
+
 const crypto = require("crypto");
 const bcrypt = require("bcryptjs");
-const { readCollection, writeCollection } = require("./db");
+const { getDb, hashToken } = require("./db");
 
 const SESSION_COOKIE = "vv_session";
-const SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
+const SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 
-function hashPassword(password) {
-  return bcrypt.hashSync(password, 10);
+function bcryptCost() {
+  const cost = Number.parseInt(process.env.BCRYPT_COST || "12", 10);
+  if (!Number.isInteger(cost) || cost < 4 || cost > 15) return 12;
+  return cost;
 }
 
-function verifyPassword(password, hash) {
-  return bcrypt.compareSync(password, hash);
+let dummyHashPromise = null;
+
+function ensureDummyHash() {
+  if (!dummyHashPromise) {
+    dummyHashPromise = bcrypt.hash("not-a-real-password", bcryptCost());
+  }
+  return dummyHashPromise;
+}
+
+function hashPassword(password) {
+  return bcrypt.hash(String(password), bcryptCost());
+}
+
+function verifyPassword(password, passwordHash) {
+  return bcrypt.compare(String(password), passwordHash);
 }
 
 function publicUser(user) {
@@ -18,25 +35,38 @@ function publicUser(user) {
 }
 
 function createSession(userId) {
-  const sessions = readCollection("sessions");
-  const id = crypto.randomBytes(32).toString("hex");
-  sessions.push({ id, userId, createdAt: new Date().toISOString(), expiresAt: Date.now() + SESSION_TTL_MS });
-  writeCollection("sessions", sessions);
-  return id;
+  const token = crypto.randomBytes(32).toString("hex");
+  getDb()
+    .prepare(
+      `INSERT INTO sessions (token_hash, user_id, created_at, expires_at) VALUES (?, ?, ?, ?)`
+    )
+    .run(hashToken(token), userId, new Date().toISOString(), Date.now() + SESSION_TTL_MS);
+  return token;
 }
 
-function destroySession(sessionId) {
-  const sessions = readCollection("sessions").filter((s) => s.id !== sessionId);
-  writeCollection("sessions", sessions);
+function destroySession(sessionToken) {
+  if (!sessionToken) return;
+  getDb().prepare("DELETE FROM sessions WHERE token_hash = ?").run(hashToken(sessionToken));
 }
 
-function getUserForSession(sessionId) {
-  if (!sessionId) return null;
-  const sessions = readCollection("sessions");
-  const session = sessions.find((s) => s.id === sessionId);
-  if (!session || session.expiresAt < Date.now()) return null;
-  const users = readCollection("users");
-  return users.find((u) => u.id === session.userId) || null;
+function destroyAllSessions(userId) {
+  getDb().prepare("DELETE FROM sessions WHERE user_id = ?").run(userId);
+}
+
+function destroyOtherSessions(userId, keepToken) {
+  const keepHash = keepToken ? hashToken(keepToken) : "";
+  getDb().prepare("DELETE FROM sessions WHERE user_id = ? AND token_hash != ?").run(userId, keepHash);
+}
+
+function getUserForSession(sessionToken) {
+  if (!sessionToken) return null;
+  const db = getDb();
+  const session = db.prepare("SELECT user_id, expires_at FROM sessions WHERE token_hash = ?").get(hashToken(sessionToken));
+  if (!session || session.expires_at < Date.now()) {
+    if (session) db.prepare("DELETE FROM sessions WHERE token_hash = ?").run(hashToken(sessionToken));
+    return null;
+  }
+  return db.prepare("SELECT id, email, password_hash, active_vault_id, created_at FROM users WHERE id = ?").get(session.user_id) || null;
 }
 
 function cookieOptions() {
@@ -45,16 +75,15 @@ function cookieOptions() {
     sameSite: "lax",
     secure: process.env.NODE_ENV === "production",
     maxAge: SESSION_TTL_MS,
+    path: "/",
   };
 }
 
-// Attaches req.user (without passwordHash) when a valid session cookie is present.
-// Never rejects the request — routes that require a login check req.user themselves.
 function attachUser(req, res, next) {
-  const sessionId = req.cookies && req.cookies[SESSION_COOKIE];
-  const user = getUserForSession(sessionId);
+  const sessionToken = req.cookies && req.cookies[SESSION_COOKIE];
+  const user = getUserForSession(sessionToken);
   req.user = user ? publicUser(user) : null;
-  req.sessionId = sessionId || null;
+  req.sessionToken = sessionToken || null;
   next();
 }
 
@@ -63,15 +92,26 @@ function requireAuth(req, res, next) {
   next();
 }
 
+function safeEqual(a, b) {
+  const left = crypto.createHash("sha256").update(String(a)).digest();
+  const right = crypto.createHash("sha256").update(String(b)).digest();
+  return crypto.timingSafeEqual(left, right);
+}
+
 module.exports = {
   SESSION_COOKIE,
+  bcryptCost,
+  ensureDummyHash,
   hashPassword,
   verifyPassword,
   publicUser,
   createSession,
   destroySession,
+  destroyAllSessions,
+  destroyOtherSessions,
   getUserForSession,
   cookieOptions,
   attachUser,
   requireAuth,
+  safeEqual,
 };

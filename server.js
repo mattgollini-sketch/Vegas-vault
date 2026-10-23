@@ -1,302 +1,460 @@
+"use strict";
+
 require("dotenv").config();
+
 const express = require("express");
 const cookieParser = require("cookie-parser");
+const helmet = require("helmet");
 const path = require("path");
 const webpush = require("web-push");
 const cron = require("node-cron");
 
-const { readCollection, writeCollection } = require("./db");
+const { getDb, backupDatabase } = require("./db");
 const auth = require("./auth");
 const users = require("./users");
 const vaults = require("./vaults");
+const notify = require("./notify");
+const { authRateLimit, inviteRateLimit, geocodeRateLimit } = require("./rate-limit");
 
-const app = express();
 const PORT = process.env.PORT || 3000;
+const PUBLIC_DIR = path.join(__dirname, "public");
+const NOTIFY_TIMEZONE = "America/Los_Angeles";
+const SIGNUP_MESSAGE =
+  "If this email is new, you're signed in. If you already have an account, log in with your password.";
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 const VAPID_PUBLIC_KEY = process.env.VAPID_PUBLIC_KEY || "";
 const VAPID_PRIVATE_KEY = process.env.VAPID_PRIVATE_KEY || "";
 const VAPID_SUBJECT = process.env.VAPID_SUBJECT || "mailto:example@example.com";
-
 const vapidConfigured = Boolean(VAPID_PUBLIC_KEY && VAPID_PRIVATE_KEY);
+
 if (vapidConfigured) {
   webpush.setVapidDetails(VAPID_SUBJECT, VAPID_PUBLIC_KEY, VAPID_PRIVATE_KEY);
-} else {
-  console.warn(
-    "VAPID keys not set — push notifications are disabled. Run `npm run generate-vapid-keys` and fill in .env"
-  );
 }
 
-app.use(express.json());
-app.use(cookieParser());
-app.use(auth.attachUser);
-app.use(express.static(__dirname));
+function createApp() {
+  const app = express();
+  app.set("trust proxy", 1);
+  app.disable("x-powered-by");
 
-// ---------- Auth ----------
-const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+  app.use(
+    helmet({
+      crossOriginEmbedderPolicy: false,
+      contentSecurityPolicy: {
+        useDefaults: true,
+        directives: {
+          "default-src": ["'self'"],
+          "script-src": ["'self'", "https://unpkg.com"],
+          "style-src": ["'self'", "https://unpkg.com", "'unsafe-inline'"],
+          "img-src": ["'self'", "data:", "blob:", "https://unpkg.com", "https://*.tile.openstreetmap.org"],
+          "connect-src": [
+            "'self'",
+            "https://api.open-meteo.com",
+            "https://nominatim.openstreetmap.org",
+            "https://router.project-osrm.org",
+            "https://*.tile.openstreetmap.org",
+          ],
+          "worker-src": ["'self'"],
+          "manifest-src": ["'self'"],
+          "object-src": ["'none'"],
+          "base-uri": ["'self'"],
+          "frame-ancestors": ["'none'"],
+        },
+      },
+    })
+  );
+
+  app.use(express.json({ limit: "512kb" }));
+  app.use(cookieParser());
+  app.use(auth.attachUser);
+  app.use(requireJsonBody);
+  app.use(sameOriginMutations);
+
+  app.get("/healthz", (req, res) => {
+    getDb();
+    res.json({ ok: true });
+  });
+
+  const limitAuth = authRateLimit();
+  const limitInvite = inviteRateLimit();
+
+  app.post("/api/auth/signup", limitAuth, async (req, res) => {
+    const { email, password } = req.body || {};
+    if (!email || !EMAIL_RE.test(String(email)) || String(email).length > 254) {
+      return res.status(400).json({ error: "Enter a valid email address." });
+    }
+    if (!password || String(password).length < 8 || String(password).length > 200) {
+      return res.status(400).json({ error: "Password must be at least 8 characters." });
+    }
+
+    const passwordHash = await auth.hashPassword(password);
+    if (users.findUserByEmail(email)) {
+      return res.status(200).json({ ok: true, user: null, message: SIGNUP_MESSAGE });
+    }
+
+    const user = getDb().transaction(() => {
+      const created = users.createUser(email, passwordHash);
+      const vault = vaults.createVault("My Vegas Trip");
+      vaults.addMembership(vault.id, created.id, "owner");
+      users.setActiveVault(created.id, vault.id);
+      return created;
+    })();
+
+    const sessionToken = auth.createSession(user.id);
+    res.cookie(auth.SESSION_COOKIE, sessionToken, auth.cookieOptions());
+    res.status(200).json({ ok: true, message: SIGNUP_MESSAGE, ...meResponse(auth.publicUser(user)) });
+  });
+
+  app.post("/api/auth/login", limitAuth, async (req, res) => {
+    const { email, password } = req.body || {};
+    const user = email ? users.findUserByEmail(email) : null;
+    const hash = user ? user.passwordHash : await auth.ensureDummyHash();
+    const matches = await auth.verifyPassword(String(password || ""), hash);
+    if (!user || !matches) {
+      return res.status(401).json({ error: "Invalid email or password." });
+    }
+    const sessionToken = auth.createSession(user.id);
+    res.cookie(auth.SESSION_COOKIE, sessionToken, auth.cookieOptions());
+    res.json(meResponse(auth.publicUser(user)));
+  });
+
+  app.post("/api/auth/logout", (req, res) => {
+    if (req.sessionToken) auth.destroySession(req.sessionToken);
+    res.clearCookie(auth.SESSION_COOKIE, { path: "/" });
+    res.json({ ok: true });
+  });
+
+  app.post("/api/auth/logout-all", auth.requireAuth, (req, res) => {
+    auth.destroyAllSessions(req.user.id);
+    res.clearCookie(auth.SESSION_COOKIE, { path: "/" });
+    res.json({ ok: true });
+  });
+
+  app.post("/api/auth/password", limitAuth, auth.requireAuth, async (req, res) => {
+    const { currentPassword, newPassword } = req.body || {};
+    if (!newPassword || String(newPassword).length < 8 || String(newPassword).length > 200) {
+      return res.status(400).json({ error: "New password must be at least 8 characters." });
+    }
+    const user = users.findUserById(req.user.id);
+    const matches = await auth.verifyPassword(String(currentPassword || ""), user.passwordHash);
+    if (!matches) return res.status(401).json({ error: "Current password is wrong." });
+    users.setPasswordHash(user.id, await auth.hashPassword(newPassword));
+    auth.destroyOtherSessions(user.id, req.sessionToken);
+    res.json({ ok: true });
+  });
+
+  app.get("/api/me", (req, res) => {
+    if (!req.user) return res.json({ user: null });
+    res.json(meResponse(req.user));
+  });
+
+  app.put("/api/me/active-vault", auth.requireAuth, (req, res) => {
+    const { vaultId } = req.body || {};
+    if (!vaults.getMembership(vaultId, req.user.id)) {
+      return res.status(403).json({ error: "You're not a member of that Vault." });
+    }
+    users.setActiveVault(req.user.id, vaultId);
+    res.json(meResponse(req.user));
+  });
+
+  app.get("/api/vault/:id", auth.requireAuth, (req, res) => {
+    const membership = vaults.getMembership(req.params.id, req.user.id);
+    if (!membership) return res.status(403).json({ error: "You're not a member of that Vault." });
+    const vault = vaults.getVault(req.params.id);
+    if (!vault) return res.status(404).json({ error: "Vault not found." });
+    res.json(vaultPayload(vault, membership.role));
+  });
+
+  app.put("/api/vault/:id", auth.requireAuth, async (req, res) => {
+    const membership = vaults.getMembership(req.params.id, req.user.id);
+    if (!membership) return res.status(403).json({ error: "You're not a member of that Vault." });
+    const { state, baseVersion } = req.body || {};
+    if (baseVersion == null || Number.isNaN(Number(baseVersion))) {
+      return res.status(400).json({ error: "Missing baseVersion. Reload this Vault and try again." });
+    }
+    const saved = vaults.saveVaultState(req.params.id, state, baseVersion, req.user.id);
+    if (saved.error === "missing") return res.status(404).json({ error: "Vault not found." });
+    if (saved.error === "invalid") return res.status(400).json({ error: saved.message });
+    if (saved.error === "conflict") {
+      return res.status(409).json({
+        error: "Someone else saved this Vault. Your copy can be merged and saved again.",
+        version: saved.vault.version,
+        state: saved.vault.state,
+        updatedAt: saved.vault.updatedAt,
+        updatedByEmail: saved.vault.updatedByEmail,
+      });
+    }
+    try {
+      await notify.maybeSendBudgetAlerts(webpush, vapidConfigured, req.params.id);
+    } catch (err) {
+      console.error("Budget alert failed:", err.message);
+    }
+    res.json({ ok: true, version: saved.version, updatedAt: saved.updatedAt });
+  });
+
+  app.get("/api/vault/:id/members", auth.requireAuth, (req, res) => {
+    const membership = vaults.getMembership(req.params.id, req.user.id);
+    if (!membership) return res.status(403).json({ error: "You're not a member of that Vault." });
+    const vault = vaults.getVault(req.params.id);
+    res.json({
+      members: vaults.listMembers(req.params.id),
+      updatedAt: vault && vault.updatedAt,
+      updatedByEmail: vault && vault.updatedByEmail,
+    });
+  });
+
+  app.delete("/api/vault/:id/members/:userId", auth.requireAuth, (req, res) => {
+    const membership = requireOwner(req, res);
+    if (!membership) return;
+    if (req.params.userId === req.user.id) {
+      return res.status(400).json({ error: "Use leave to remove yourself." });
+    }
+    const result = vaults.removeMember(req.params.id, req.params.userId);
+    if (result.error === "missing") return res.status(404).json({ error: "That person is not in this Vault." });
+    if (result.error === "last-owner") {
+      return res.status(400).json({ error: "Make someone else an owner before removing the last owner." });
+    }
+    res.json({ ok: true, members: vaults.listMembers(req.params.id) });
+  });
+
+  app.post("/api/vault/:id/members/:userId/role", auth.requireAuth, (req, res) => {
+    const membership = requireOwner(req, res);
+    if (!membership) return;
+    const result = vaults.setMemberRole(req.params.id, req.params.userId, (req.body || {}).role);
+    if (result.error === "missing") return res.status(404).json({ error: "That person is not in this Vault." });
+    if (result.error === "last-owner") {
+      return res.status(400).json({ error: "This Vault needs at least one owner." });
+    }
+    if (result.error) return res.status(400).json({ error: "Role must be owner or member." });
+    res.json({ ok: true, members: vaults.listMembers(req.params.id) });
+  });
+
+  app.post("/api/vault/:id/leave", auth.requireAuth, (req, res) => {
+    const membership = vaults.getMembership(req.params.id, req.user.id);
+    if (!membership) return res.status(403).json({ error: "You're not a member of that Vault." });
+    const result = vaults.leaveVault(req.params.id, req.user.id);
+    if (result.error === "last-owner") {
+      return res.status(400).json({
+        error: "You're the only owner. Make someone else an owner before you leave.",
+      });
+    }
+    res.json(meResponse(req.user));
+  });
+
+  app.post("/api/vault/:id/invite", limitInvite, auth.requireAuth, (req, res) => {
+    const membership = requireOwner(req, res);
+    if (!membership) return;
+    const invite = vaults.createInvite(req.params.id, req.user.id);
+    res.status(201).json({
+      id: invite.id,
+      token: invite.token,
+      path: `/?invite=${invite.token}`,
+      expiresAt: invite.expiresAt,
+    });
+  });
+
+  app.get("/api/vault/:id/invites", auth.requireAuth, (req, res) => {
+    const membership = requireOwner(req, res);
+    if (!membership) return;
+    res.json({ invites: vaults.listInvites(req.params.id) });
+  });
+
+  app.delete("/api/vault/:id/invites/:inviteId", auth.requireAuth, (req, res) => {
+    const membership = requireOwner(req, res);
+    if (!membership) return;
+    const revoked = vaults.revokeInvite(req.params.id, req.params.inviteId);
+    if (!revoked) return res.status(404).json({ error: "That invite is already used or revoked." });
+    res.json({ ok: true, invites: vaults.listInvites(req.params.id) });
+  });
+
+  app.get("/api/invite/:token", limitInvite, (req, res) => {
+    const invite = vaults.getInvite(req.params.token);
+    if (!invite) return res.status(404).json({ error: "This invite link is invalid, used, or expired." });
+    const vault = vaults.getVault(invite.vaultId);
+    if (!vault) return res.status(404).json({ error: "This Vault no longer exists." });
+    res.json({ vaultName: vault.name, expiresAt: invite.expiresAt });
+  });
+
+  app.post("/api/invite/:token/accept", limitInvite, auth.requireAuth, (req, res) => {
+    const result = vaults.acceptInvite(req.params.token, req.user.id);
+    if (result.error) return res.status(404).json({ error: "This invite link is invalid, used, or expired." });
+    users.setActiveVault(req.user.id, result.vaultId);
+    res.json(meResponse(req.user));
+  });
+
+  app.get("/api/vapid-public-key", (req, res) => {
+    res.json({ publicKey: vapidConfigured ? VAPID_PUBLIC_KEY : null });
+  });
+
+  app.post("/api/subscribe", auth.requireAuth, (req, res) => {
+    const { subscription } = req.body || {};
+    if (!subscription || !subscription.endpoint) {
+      return res.status(400).json({ error: "Missing subscription" });
+    }
+    notify.upsertSubscription(req.user.id, subscription);
+    res.status(201).json({ ok: true });
+  });
+
+  app.post("/api/unsubscribe", auth.requireAuth, (req, res) => {
+    const { endpoint } = req.body || {};
+    if (!endpoint) return res.status(400).json({ error: "Missing endpoint" });
+    const result = notify.deleteOwnSubscription(endpoint, req.user.id);
+    if (result.forbidden) {
+      return res.status(403).json({ error: "You can only remove your own notification subscription." });
+    }
+    res.json({ ok: true });
+  });
+
+  app.post("/api/send-now", async (req, res) => {
+    const secret = process.env.ADMIN_SECRET || "";
+    if (!secret) return res.status(404).json({ error: "Not found" });
+    const provided = req.get("x-admin-secret") || "";
+    if (!auth.safeEqual(provided, secret)) return res.status(403).json({ error: "Forbidden" });
+    const result = await notify.sendDailyNotifications(webpush, vapidConfigured);
+    res.json(result);
+  });
+
+  app.get("/api/geocode", geocodeRateLimit(), async (req, res) => {
+    const query = String(req.query.q || "").trim();
+    if (!query || query.length > 200) return res.status(400).json({ error: "Enter a place to look up." });
+    try {
+      const url = `https://nominatim.openstreetmap.org/search?format=jsonv2&limit=1&q=${encodeURIComponent(query)}`;
+      const response = await fetch(url, {
+        headers: {
+          "User-Agent": "VegasVault/1.0 (personal trip planner)",
+          Accept: "application/json",
+        },
+      });
+      if (!response.ok) return res.status(502).json({ error: "Place lookup failed." });
+      const matches = await response.json();
+      if (!matches[0]) return res.status(404).json({ error: "No matching place." });
+      res.json({
+        lat: Number(matches[0].lat),
+        lng: Number(matches[0].lon),
+        label: matches[0].display_name,
+      });
+    } catch (err) {
+      res.status(502).json({ error: "Place lookup failed." });
+    }
+  });
+
+  app.use(express.static(PUBLIC_DIR, { dotfiles: "deny", index: "index.html", fallthrough: true }));
+
+  app.use((req, res) => {
+    if (req.path.startsWith("/api/")) return res.status(404).json({ error: "Not found" });
+    res.status(404).type("text").send("Not found");
+  });
+
+  app.use((err, req, res, next) => {
+    if (err && err.type === "entity.parse.failed") {
+      return res.status(400).json({ error: "Request could not be read." });
+    }
+    if (err && err.type === "entity.too.large") {
+      return res.status(413).json({ error: "That trip is too large to save." });
+    }
+    console.error(err);
+    res.status(500).json({ error: "Something went wrong." });
+  });
+
+  return app;
+}
 
 function meResponse(user) {
+  const fresh = users.findUserById(user.id);
   return {
-    user,
+    user: auth.publicUser(fresh || user),
     vaults: vaults.getVaultsForUser(user.id),
-    activeVaultId: users.findUserById(user.id).activeVaultId,
+    activeVaultId: fresh ? fresh.activeVaultId : null,
   };
 }
 
-app.post("/api/auth/signup", (req, res) => {
-  const { email, password } = req.body || {};
-  if (!email || !EMAIL_RE.test(String(email))) {
-    return res.status(400).json({ error: "Enter a valid email address." });
-  }
-  if (!password || String(password).length < 8) {
-    return res.status(400).json({ error: "Password must be at least 8 characters." });
-  }
-  if (users.findUserByEmail(email)) {
-    return res.status(409).json({ error: "An account with that email already exists." });
-  }
+function vaultPayload(vault, role) {
+  return {
+    id: vault.id,
+    name: vault.name,
+    state: vault.state,
+    role,
+    version: vault.version,
+    updatedAt: vault.updatedAt,
+    updatedByEmail: vault.updatedByEmail,
+  };
+}
 
-  const passwordHash = auth.hashPassword(password);
-  const user = users.createUser(email, passwordHash);
-  const vault = vaults.createVault("My Vegas Trip");
-  vaults.addMembership(vault.id, user.id, "owner");
-  users.setActiveVault(user.id, vault.id);
-
-  const sessionId = auth.createSession(user.id);
-  res.cookie(auth.SESSION_COOKIE, sessionId, auth.cookieOptions());
-  res.status(201).json(meResponse(auth.publicUser(user)));
-});
-
-app.post("/api/auth/login", (req, res) => {
-  const { email, password } = req.body || {};
-  const user = email ? users.findUserByEmail(email) : null;
-  if (!user || !auth.verifyPassword(String(password || ""), user.passwordHash)) {
-    return res.status(401).json({ error: "Invalid email or password." });
-  }
-
-  const sessionId = auth.createSession(user.id);
-  res.cookie(auth.SESSION_COOKIE, sessionId, auth.cookieOptions());
-  res.json(meResponse(auth.publicUser(user)));
-});
-
-app.post("/api/auth/logout", (req, res) => {
-  if (req.sessionId) auth.destroySession(req.sessionId);
-  res.clearCookie(auth.SESSION_COOKIE);
-  res.json({ ok: true });
-});
-
-app.get("/api/me", (req, res) => {
-  if (!req.user) return res.json({ user: null });
-  res.json(meResponse(req.user));
-});
-
-app.put("/api/me/active-vault", auth.requireAuth, (req, res) => {
-  const { vaultId } = req.body || {};
-  if (!vaults.getMembership(vaultId, req.user.id)) {
-    return res.status(403).json({ error: "You're not a member of that Vault." });
-  }
-  users.setActiveVault(req.user.id, vaultId);
-  res.json(meResponse(req.user));
-});
-
-// ---------- Vault sync ----------
-app.get("/api/vault/:id", auth.requireAuth, (req, res) => {
+function requireOwner(req, res) {
   const membership = vaults.getMembership(req.params.id, req.user.id);
-  if (!membership) return res.status(403).json({ error: "You're not a member of that Vault." });
-  const vault = vaults.getVault(req.params.id);
-  if (!vault) return res.status(404).json({ error: "Vault not found." });
-  res.json({ id: vault.id, name: vault.name, state: vault.state, role: membership.role });
-});
-
-app.put("/api/vault/:id", auth.requireAuth, (req, res) => {
-  const membership = vaults.getMembership(req.params.id, req.user.id);
-  if (!membership) return res.status(403).json({ error: "You're not a member of that Vault." });
-  const { state } = req.body || {};
-  if (typeof state !== "object" || state === null) {
-    return res.status(400).json({ error: "Missing state." });
+  if (!membership) {
+    res.status(403).json({ error: "You're not a member of that Vault." });
+    return null;
   }
-  const vault = vaults.saveVaultState(req.params.id, state);
-  res.json({ ok: true, updatedAt: vault.updatedAt });
-});
-
-// ---------- Sharing ----------
-app.post("/api/vault/:id/invite", auth.requireAuth, (req, res) => {
-  const membership = vaults.getMembership(req.params.id, req.user.id);
-  if (!membership) return res.status(403).json({ error: "You're not a member of that Vault." });
-  const invite = vaults.createInvite(req.params.id, req.user.id);
-  res.status(201).json({ token: invite.token, path: `/?invite=${invite.token}` });
-});
-
-app.get("/api/invite/:token", (req, res) => {
-  const invite = vaults.getInvite(req.params.token);
-  if (!invite) return res.status(404).json({ error: "This invite link is invalid or has expired." });
-  const vault = vaults.getVault(invite.vaultId);
-  if (!vault) return res.status(404).json({ error: "This Vault no longer exists." });
-  res.json({ vaultName: vault.name });
-});
-
-app.post("/api/invite/:token/accept", auth.requireAuth, (req, res) => {
-  const invite = vaults.getInvite(req.params.token);
-  if (!invite) return res.status(404).json({ error: "This invite link is invalid or has expired." });
-  vaults.addMembership(invite.vaultId, req.user.id, "member");
-  users.setActiveVault(req.user.id, invite.vaultId);
-  res.json(meResponse(req.user));
-});
-
-// ---------- Push notifications ----------
-app.get("/api/vapid-public-key", (req, res) => {
-  res.json({ publicKey: vapidConfigured ? VAPID_PUBLIC_KEY : null });
-});
-
-app.post("/api/subscribe", auth.requireAuth, (req, res) => {
-  const { subscription } = req.body || {};
-  if (!subscription || !subscription.endpoint) {
-    return res.status(400).json({ error: "Missing subscription" });
+  if (membership.role !== "owner") {
+    res.status(403).json({ error: "Only the Vault owner can do that." });
+    return null;
   }
-  const vaultId = users.findUserById(req.user.id).activeVaultId;
-  if (!vaultId) return res.status(400).json({ error: "No active Vault to notify you about." });
-
-  const subs = readCollection("subscriptions");
-  const idx = subs.findIndex((s) => s.subscription.endpoint === subscription.endpoint);
-  const record = { subscription, vaultId, userId: req.user.id, updatedAt: new Date().toISOString() };
-  if (idx >= 0) subs[idx] = record;
-  else subs.push(record);
-  writeCollection("subscriptions", subs);
-  res.status(201).json({ ok: true });
-});
-
-app.post("/api/unsubscribe", (req, res) => {
-  const { endpoint } = req.body || {};
-  const subs = readCollection("subscriptions").filter((s) => s.subscription.endpoint !== endpoint);
-  writeCollection("subscriptions", subs);
-  res.json({ ok: true });
-});
-
-app.post("/api/send-now", async (req, res) => {
-  const result = await sendDailyNotifications();
-  res.json(result);
-});
-
-// ---------- Daily hype message, computed from the Vault's live saved state ----------
-const VEGAS_TIPS = [
-  "Casino floors are designed with no clocks or windows — set a phone alarm if you need to keep track of time.",
-  "Rideshare pickup at the airport and big Strip resorts can involve a walk to a dedicated lot — budget extra time.",
-  "Tap water is safe to drink, but hotel minibar bottles are pricey — grab a case at a nearby CVS or Walgreens instead.",
-  "The Strip looks walkable on a map, but one 'block' can take 15+ minutes on foot — factor that into show and dinner timing.",
-  "Ask about resort fees before you book elsewhere — they're charged nightly on top of the room rate almost everywhere.",
-  "Most pool clubs and dayclubs are 21+ with a dress code — check swimwear rules before you pack.",
-  "Sportsbooks get packed during major games — arrive early if you want a seat to watch and bet.",
-  "Buffet and show tickets are often cheaper same-day through the box office or official hotel app than pre-booking.",
-  "Keep a photo of your ID and reservation confirmations saved offline in case your phone dies or loses signal.",
-  "Nightclub tables and bottle service require reservations well in advance for weekends — don't wait until you land.",
-  "Fremont Street downtown has a different, cheaper vibe than the Strip — worth a night if you want a break from resort prices.",
-  "Elevators in mega-resorts can take a while at peak times — build in buffer time before dinner reservations.",
-  "Comfortable shoes matter more than they sound — you'll likely walk several miles a day between casinos alone.",
-  "Set a gambling budget before you sit down, and treat it as the cost of entertainment, not an investment.",
-  "Vegas is desert heat — even 'mild' days can hit 90°F+, so sunscreen and water matter even on indoors-heavy itineraries.",
-  "Many shows sell rush or last-minute discounted tickets — check the day-of if you're flexible.",
-  "If you're gambling, ask about a players card at the casino cage — comps and discounts add up fast.",
-  "Late checkout isn't guaranteed — call the front desk the morning of if you want a shot at extra time.",
-];
-
-function todayStr() {
-  return new Date().toISOString().slice(0, 10);
+  return membership;
 }
 
-function tipOfDay() {
-  const d = new Date();
-  const dayOfYear = Math.floor((d - new Date(d.getFullYear(), 0, 0)) / 86400000);
-  return VEGAS_TIPS[dayOfYear % VEGAS_TIPS.length];
+function requireJsonBody(req, res, next) {
+  if (!["POST", "PUT", "PATCH"].includes(req.method)) return next();
+  const length = Number(req.get("content-length") || 0);
+  if (length > 0 && !req.is("application/json")) {
+    return res.status(415).json({ error: "Content-Type must be application/json." });
+  }
+  next();
 }
 
-// vaultState is the exact JSON blob the client keeps in localStorage / PUTs to
-// /api/vault/:id, so this reads the same shape app.js does client-side.
-function buildMessageForVault(vaultState) {
-  const state = vaultState || {};
-  const hotel = state.hotel || {};
-  const today = todayStr();
-  const checkIn = hotel.checkIn;
-  const checkOut = hotel.checkOut;
-
-  let phase = "unknown";
-  if (checkIn && checkOut) {
-    if (today < checkIn) phase = "before";
-    else if (today > checkOut) phase = "after";
-    else phase = "during";
-  } else if (state.tripDate) {
-    const tripDateOnly = state.tripDate.slice(0, 10);
-    if (today < tripDateOnly) phase = "before";
-    else if (today > tripDateOnly) phase = "after";
-    else phase = "during";
+function sameOriginMutations(req, res, next) {
+  if (["GET", "HEAD", "OPTIONS"].includes(req.method)) return next();
+  const origin = req.get("origin");
+  if (!origin) return next();
+  let originHost = "";
+  try {
+    originHost = new URL(origin).host;
+  } catch (e) {
+    return res.status(403).json({ error: "Cross-origin request blocked." });
   }
+  if (originHost !== req.get("host")) {
+    return res.status(403).json({ error: "Cross-origin request blocked." });
+  }
+  next();
+}
 
-  const name = state.tripName || "your Vegas trip";
+function notifyHour() {
+  const hour = Number.parseInt(process.env.NOTIFY_HOUR, 10);
+  return Number.isInteger(hour) && hour >= 0 && hour <= 23 ? hour : 9;
+}
 
-  if (phase === "during") {
-    const todays = (state.reservations || [])
-      .filter((r) => r.date === today)
-      .sort((a, b) => (a.time || "99:99").localeCompare(b.time || "99:99"));
-    if (todays.length) {
-      const first = todays[0];
-      return {
-        title: "🌃 Tonight in Vegas",
-        body: `First up today: ${first.name}${first.time ? " at " + first.time : ""}. ${tipOfDay()}`,
-      };
+function start(existingApp) {
+  const running = existingApp || createApp();
+  const hour = notifyHour();
+  cron.schedule(
+    `0 ${hour} * * *`,
+    () => {
+      console.log("Running daily Vegas Vault notification job...");
+      notify.sendDailyNotifications(webpush, vapidConfigured).catch((err) => {
+        console.error("Daily notification job failed:", err.message);
+      });
+    },
+    { timezone: NOTIFY_TIMEZONE }
+  );
+  cron.schedule(
+    "30 3 * * *",
+    () => {
+      backupDatabase();
+    },
+    { timezone: NOTIFY_TIMEZONE }
+  );
+  running.listen(PORT, () => {
+    console.log(`Vegas Vault server running at http://localhost:${PORT}`);
+    console.log(`Daily notifications scheduled for ${hour}:00 ${NOTIFY_TIMEZONE}.`);
+    if (!vapidConfigured) {
+      console.warn("VAPID keys not set — push notifications are disabled. Run `npm run generate-vapid-keys`.");
     }
-    return { title: "🌴 You're in Vegas!", body: `Nothing booked today — go make something happen. ${tipOfDay()}` };
-  }
-
-  if (phase === "after") return null; // stop notifying once the trip has ended
-
-  if (phase === "before") {
-    const target = checkIn ? new Date(`${checkIn}T00:00`) : state.tripDate ? new Date(state.tripDate) : null;
-    if (!target || Number.isNaN(target.getTime())) return null;
-    const daysLeft = Math.ceil((target.getTime() - Date.now()) / 86400000);
-    if (daysLeft <= 0) return { title: "🎉 Today's the day!", body: `${name} starts today. ${tipOfDay()}` };
-    return { title: `📅 ${daysLeft} day${daysLeft === 1 ? "" : "s"} until Vegas`, body: tipOfDay() };
-  }
-
-  return null; // no trip date set yet
+  });
+  return running;
 }
 
-async function sendDailyNotifications() {
-  if (!vapidConfigured) return { ok: false, reason: "VAPID keys not configured" };
+const app = createApp();
 
-  const subs = readCollection("subscriptions");
-  const survivors = [];
-  let sent = 0;
+if (require.main === module) start(app);
 
-  for (const record of subs) {
-    const vault = vaults.getVault(record.vaultId);
-    const message = vault ? buildMessageForVault(vault.state) : null;
-    if (!message) {
-      survivors.push(record);
-      continue;
-    }
-    try {
-      await webpush.sendNotification(record.subscription, JSON.stringify(message));
-      survivors.push(record);
-      sent += 1;
-    } catch (err) {
-      if (err.statusCode === 404 || err.statusCode === 410) {
-        console.log("Subscription expired, removing:", record.subscription.endpoint);
-      } else {
-        console.error("Push send failed:", err.message);
-        survivors.push(record);
-      }
-    }
-  }
-
-  writeCollection("subscriptions", survivors);
-  return { ok: true, sent, total: subs.length };
-}
-
-const notifyHour = Number.parseInt(process.env.NOTIFY_HOUR, 10);
-const cronHour = Number.isInteger(notifyHour) && notifyHour >= 0 && notifyHour <= 23 ? notifyHour : 9;
-cron.schedule(`0 ${cronHour} * * *`, () => {
-  console.log("Running daily Vegas Vault notification job...");
-  sendDailyNotifications();
-});
-
-app.listen(PORT, () => {
-  console.log(`Vegas Vault server running at http://localhost:${PORT}`);
-  console.log(`Daily notifications scheduled for ${cronHour}:00 server time.`);
-});
+module.exports = { app, createApp, start, SIGNUP_MESSAGE };
