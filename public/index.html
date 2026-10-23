@@ -9,6 +9,9 @@
 <link rel="icon" href="icons/icon-192.png" />
 <link rel="apple-touch-icon" href="icons/icon-192.png" />
 <meta name="theme-color" content="#150f26" />
+<meta name="mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin="anonymous" />
 </head>
 <body>
   <div class="glow glow-pink"></div>
@@ -18,13 +21,22 @@
     <h1>🎰 Vegas <span>Vault</span></h1>
     <p class="tagline">Your countdown, your hotel, your hit list.</p>
     <p class="account-bar" id="accountBar"></p>
+    <p id="syncPill" class="sync-pill ok">Saved on this device</p>
   </header>
+
+  <div id="installBanner" class="install-banner" hidden>
+    <p id="installText"></p>
+    <div class="add-row">
+      <button type="button" id="installBtn">Install app</button>
+      <button type="button" id="installDismiss" class="secondary-btn">Not now</button>
+    </div>
+  </div>
 
   <main>
     <section class="countdown-card">
       <div class="trip-setup">
         <label>
-          Trip date &amp; time
+          Trip date &amp; time (Las Vegas time)
           <input type="datetime-local" id="tripDateInput" />
         </label>
         <label>
@@ -32,6 +44,7 @@
           <input type="text" id="tripNameInput" placeholder="e.g. Bachelor Weekend" />
         </label>
       </div>
+      <p class="panel-hint zone-note">The countdown uses Pacific time, even if your phone is set somewhere else.</p>
 
       <div class="countdown" id="countdown">
         <div class="unit"><span id="days">00</span><small>days</small></div>
@@ -43,6 +56,7 @@
     </section>
 
     <section class="hype-banner" id="hypeBanner"></section>
+    <div id="budgetBanner" class="import-banner" hidden></div>
 
     <section class="hype-grid">
       <div class="hype-card" id="tonightCard">
@@ -66,8 +80,11 @@
       <button class="tab-btn" data-tab="nightclubs" data-category="nightclubs">🥂 Nightclubs</button>
       <button class="tab-btn" data-tab="pool" data-category="pool">🏊 Pool</button>
       <button class="tab-btn" data-tab="bankroll">💰 Bankroll</button>
+      <button class="tab-btn" data-tab="expenses">💸 Expenses</button>
       <button class="tab-btn" data-tab="outfits">👗 Outfits</button>
       <button class="tab-btn" data-tab="itinerary">🗓️ Itinerary</button>
+      <button class="tab-btn" data-tab="map">🗺️ Map</button>
+      <button class="tab-btn" data-tab="polls">🗳️ Polls</button>
       <button class="tab-btn" data-tab="weather">☀️ Weather</button>
     </nav>
 
@@ -77,27 +94,32 @@
       <div id="importBanner" class="import-banner" hidden>
         <p>You've got trip data saved on this device that isn't in your account yet.</p>
         <div class="add-row">
-          <button id="importAcceptBtn">Import it into my account</button>
-          <button id="importDismissBtn" class="secondary-btn">No thanks</button>
+          <button type="button" id="importAcceptBtn">Import it into my account</button>
+          <button type="button" id="importDismissBtn" class="secondary-btn">No thanks</button>
         </div>
       </div>
 
       <div id="inviteBanner" class="import-banner" hidden>
         <p id="inviteBannerText"></p>
         <div class="add-row">
-          <button id="inviteAcceptBtn">Join this Vault</button>
-          <button id="inviteDismissBtn" class="secondary-btn">Dismiss</button>
+          <button type="button" id="inviteAcceptBtn">Join this Vault</button>
+          <button type="button" id="inviteDismissBtn" class="secondary-btn">Dismiss</button>
         </div>
       </div>
 
       <div id="loggedOutView">
         <p class="panel-hint">
           Sign in to sync this Vault across your devices and invite your group to plan together.
-          Without an account, everything just stays in this browser.
+          Without an account, everything stays in this browser and still works offline.
         </p>
         <form id="authForm" class="form-grid">
           <label class="full">Email <input type="email" id="authEmail" autocomplete="email" required /></label>
-          <label class="full">Password <input type="password" id="authPassword" autocomplete="current-password" required minlength="8" /></label>
+          <label class="full">Password
+            <span class="password-row">
+              <input type="password" id="authPassword" autocomplete="current-password" required minlength="8" />
+              <button type="button" id="passwordToggle" class="secondary-btn">Show</button>
+            </span>
+          </label>
         </form>
         <p class="form-error" id="authError"></p>
         <div class="add-row">
@@ -108,21 +130,47 @@
 
       <div id="loggedInView" hidden>
         <p>Signed in as <strong id="accountEmail"></strong></p>
+        <p class="panel-hint" id="vaultEdited"></p>
 
         <label class="vault-switcher-label" for="vaultSwitcher" id="vaultSwitcherWrap" hidden>
           Viewing Vault
           <select id="vaultSwitcher"></select>
         </label>
 
+        <label class="vault-switcher-label" for="displayNameInput">
+          Your name on polls and RSVPs
+          <input type="text" id="displayNameInput" maxlength="40" placeholder="e.g. Matt" />
+        </label>
+
+        <h3>People in this Vault</h3>
+        <ul class="checklist" id="memberList"></ul>
         <div class="add-row">
-          <button id="inviteBtn">Invite someone to this Vault</button>
-          <button id="logoutBtn" class="secondary-btn">Log out</button>
+          <button type="button" id="leaveVaultBtn" class="secondary-btn">Leave this Vault</button>
+        </div>
+
+        <div class="add-row">
+          <button type="button" id="inviteBtn">Invite someone to this Vault</button>
+          <button type="button" id="logoutBtn" class="secondary-btn">Log out</button>
+          <button type="button" id="logoutAllBtn" class="secondary-btn">Log out everywhere</button>
         </div>
         <div id="inviteLinkWrap" class="add-row" hidden>
           <input type="text" id="inviteLinkInput" readonly />
-          <button id="inviteCopyBtn">Copy link</button>
+          <button type="button" id="inviteCopyBtn">Copy link</button>
+          <button type="button" id="inviteShareBtn" class="secondary-btn">Share</button>
         </div>
-        <p class="panel-hint">Anyone with the link can sign up or log in and join this Vault.</p>
+        <p class="panel-hint">Invite links work once, expire after 7 days, and only an owner can create or revoke them.</p>
+        <ul class="checklist" id="inviteList"></ul>
+
+        <h3>Change password</h3>
+        <form id="passwordForm" class="form-grid">
+          <input type="email" id="passwordUsername" autocomplete="username" hidden />
+          <label>Current password <input type="password" id="currentPassword" autocomplete="current-password" /></label>
+          <label>New password <input type="password" id="newPassword" autocomplete="new-password" minlength="8" /></label>
+        </form>
+        <p class="form-error" id="passwordError"></p>
+        <div class="add-row">
+          <button type="button" id="passwordSaveBtn">Update password</button>
+        </div>
       </div>
     </section>
 
@@ -134,8 +182,11 @@
         <label>Check-in <input type="date" id="hotelCheckIn" /></label>
         <label>Check-out <input type="date" id="hotelCheckOut" /></label>
         <label>Room type <input type="text" id="hotelRoom" placeholder="e.g. Fountain View King" /></label>
+        <label>Phone <input type="tel" id="hotelPhone" placeholder="e.g. 702-555-0100" /></label>
+        <label class="full">Address <input type="text" id="hotelAddress" placeholder="e.g. 3600 S Las Vegas Blvd" /></label>
         <label class="full">Notes <textarea id="hotelNotes" placeholder="Resort fees, parking, early check-in requests..."></textarea></label>
       </div>
+      <div id="hotelLinks" class="link-row"></div>
     </section>
 
     <section class="panel" id="panel-flights">
@@ -152,6 +203,7 @@
           <label>To <input type="text" id="outTo" placeholder="e.g. LAS" /></label>
           <label>Confirmation # <input type="text" id="outConf" /></label>
         </div>
+        <div id="outFlightLinks" class="link-row"></div>
       </div>
       <div class="flight-block">
         <h3>Return ✈️</h3>
@@ -165,6 +217,7 @@
           <label>To <input type="text" id="retTo" placeholder="e.g. JFK" /></label>
           <label>Confirmation # <input type="text" id="retConf" /></label>
         </div>
+        <div id="retFlightLinks" class="link-row"></div>
       </div>
     </section>
 
@@ -172,7 +225,7 @@
       <h2>Essentials Checklist</h2>
       <div class="add-row">
         <input type="text" id="essentialsInput" placeholder="Add an essential..." />
-        <button id="essentialsAdd">Add</button>
+        <button type="button" id="essentialsAdd">Add</button>
       </div>
       <ul class="checklist" id="essentialsList"></ul>
     </section>
@@ -185,24 +238,60 @@
         <input type="date" id="resDateInput" />
         <input type="time" id="resTimeInput" />
         <input type="text" id="resConfInput" placeholder="Conf # (optional)" />
-        <button id="resAdd">Add</button>
+      </div>
+      <div class="add-row">
+        <input type="text" id="resAddressInput" placeholder="Address (optional)" />
+        <input type="tel" id="resPhoneInput" placeholder="Phone (optional)" />
+        <input type="url" id="resLinkInput" placeholder="Confirmation link (optional)" />
+        <button type="button" id="resAdd">Add</button>
       </div>
       <ul class="checklist" id="resList"></ul>
     </section>
 
     <section class="panel" id="panel-bankroll">
       <h2>💰 Gambling Bankroll Tracker</h2>
+      <p class="panel-hint">The budget cap is how much you're willing to lose. You'll get an alert at 80%.</p>
       <div class="form-grid">
-        <label>Starting bankroll ($) <input type="number" id="bankrollStart" step="1" /></label>
+        <label>Starting bankroll ($) <input type="number" id="bankrollStart" step="1" min="0" /></label>
+        <label>Gambling budget cap ($) <input type="number" id="gamblingBudget" step="1" min="0" /></label>
       </div>
       <div class="bankroll-total" id="bankrollTotal"></div>
+      <p class="panel-hint" id="gamblingBudgetStatus"></p>
       <div class="add-row bankroll-add-row">
         <input type="date" id="bankrollDate" />
         <input type="text" id="bankrollLabel" placeholder="e.g. Blackjack, Bellagio" />
         <input type="number" id="bankrollAmount" placeholder="+/- amount" step="1" />
-        <button id="bankrollAdd">Log</button>
+        <button type="button" id="bankrollAdd">Log</button>
       </div>
       <ul class="checklist" id="bankrollList"></ul>
+    </section>
+
+    <section class="panel" id="panel-expenses">
+      <h2>💸 Group expenses</h2>
+      <p class="panel-hint">Add everyone on the trip, log who paid, and Vegas Vault will show who owes whom. Venmo links use the username you save — no Venmo login is built in.</p>
+      <label>Spending budget cap ($)
+        <input type="number" id="spendingBudget" step="1" min="0" />
+      </label>
+      <p class="panel-hint" id="spendingBudgetStatus"></p>
+      <h3>People</h3>
+      <div class="add-row">
+        <input type="text" id="personName" placeholder="Name" />
+        <input type="text" id="personVenmo" placeholder="Venmo username (optional)" />
+        <button type="button" id="personAdd">Add person</button>
+      </div>
+      <ul class="checklist" id="peopleList"></ul>
+      <h3>Expense</h3>
+      <div class="add-row">
+        <input type="date" id="expenseDate" />
+        <input type="text" id="expenseLabel" placeholder="e.g. Dinner at Carbone" />
+        <input type="number" id="expenseAmount" placeholder="Amount" step="0.01" min="0" />
+        <select id="expensePayer"></select>
+        <button type="button" id="expenseAdd">Add expense</button>
+      </div>
+      <div id="expenseSplit" class="split-picks"></div>
+      <ul class="checklist" id="expenseList"></ul>
+      <h3>Who owes whom</h3>
+      <div id="settleList"></div>
     </section>
 
     <section class="panel" id="panel-outfits">
@@ -211,21 +300,53 @@
         <input type="date" id="outfitDate" />
         <input type="text" id="outfitLabel" placeholder="e.g. Night 1 - Club" />
         <input type="text" id="outfitDesc" placeholder="Outfit description" />
-        <button id="outfitAdd">Add</button>
+        <button type="button" id="outfitAdd">Add</button>
       </div>
       <ul class="checklist" id="outfitsList"></ul>
     </section>
 
     <section class="panel" id="panel-itinerary">
       <h2>🗓️ Group Itinerary</h2>
-      <p class="panel-hint">Auto-built from your hotel dates, flights, reservations, and outfits.</p>
+      <p class="panel-hint">Auto-built from your hotel dates, flights, reservations, and outfits. Times are Las Vegas time.</p>
+      <div class="add-row">
+        <button type="button" id="tripCalendarBtn">Add trip to calendar</button>
+      </div>
       <div id="itineraryBody"></div>
+    </section>
+
+    <section class="panel" id="panel-map">
+      <h2>🗺️ Map</h2>
+      <p class="panel-hint">Pins use OpenStreetMap. Walking times start as a straight-line estimate and switch to a route time when the free routing service answers. The map tiles need a connection. The walking list still works offline for places this browser already knows.</p>
+      <div class="add-row">
+        <button type="button" id="mapRefreshBtn">Place hotel and reservations on the map</button>
+      </div>
+      <p class="panel-hint" id="mapStatus"></p>
+      <div id="map"></div>
+      <ul class="checklist" id="walkList"></ul>
+    </section>
+
+    <section class="panel" id="panel-polls">
+      <h2>🗳️ Polls and RSVPs</h2>
+      <p class="panel-hint">Votes are saved in the shared Vault. RSVP buttons on each reservation use the same name.</p>
+      <label class="vault-switcher-label" for="pollNameInput">Your name
+        <input type="text" id="pollNameInput" maxlength="40" placeholder="e.g. Matt" />
+      </label>
+      <div class="add-row">
+        <input type="text" id="pollQuestion" placeholder="Which show Saturday night?" />
+      </div>
+      <label class="full">Choices, one per line
+        <textarea id="pollOptions" placeholder="Cirque O&#10;Absinthe&#10;Stay in"></textarea>
+      </label>
+      <div class="add-row">
+        <button type="button" id="pollAdd">Create poll</button>
+      </div>
+      <div id="pollList"></div>
     </section>
 
     <section class="panel" id="panel-weather">
       <h2>☀️ Las Vegas Weather</h2>
       <div class="add-row">
-        <button id="weatherRefresh">Refresh forecast</button>
+        <button type="button" id="weatherRefresh">Refresh forecast</button>
         <span class="panel-hint" id="weatherUpdated"></span>
       </div>
       <div id="weatherBody" class="weather-grid"></div>
@@ -234,13 +355,25 @@
 
   <footer>
     <div class="footer-buttons">
-      <button id="notifyBtn" class="notify-btn">🔔 Enable daily notifications</button>
-      <button id="resetBtn">Reset all data</button>
+      <button type="button" id="notifyBtn" class="notify-btn">🔔 Enable daily notifications</button>
+      <button type="button" id="exportBtn" class="secondary-btn">Export backup</button>
+      <button type="button" id="importBtn" class="secondary-btn">Import backup</button>
+      <input type="file" id="importFile" accept="application/json,.json" hidden />
+      <button type="button" id="resetBtn">Reset all data</button>
     </div>
     <span id="notifyStatus" class="panel-hint"></span>
-    <span>Everything is saved locally in your browser.</span>
+    <span id="footerSaveNote">Everything is saved in this browser. Sign in to sync it with your group.</span>
   </footer>
 
+  <div id="toast" class="toast" hidden>
+    <span data-toast-msg></span>
+    <button type="button" data-toast-action hidden>Undo</button>
+  </div>
+
+  <script src="time.js"></script>
+  <script src="merge.js"></script>
+  <script src="settle.js"></script>
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin="anonymous"></script>
   <script src="app.js"></script>
 </body>
 </html>

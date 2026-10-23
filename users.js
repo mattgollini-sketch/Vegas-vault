@@ -1,21 +1,34 @@
+"use strict";
+
 const crypto = require("crypto");
-const { readCollection, writeCollection } = require("./db");
+const { getDb } = require("./db");
 
 function normalizeEmail(email) {
   return String(email || "").trim().toLowerCase();
 }
 
+function rowToUser(row) {
+  if (!row) return null;
+  return {
+    id: row.id,
+    email: row.email,
+    passwordHash: row.password_hash,
+    activeVaultId: row.active_vault_id,
+    createdAt: row.created_at,
+  };
+}
+
 function findUserByEmail(email) {
-  const normalized = normalizeEmail(email);
-  return readCollection("users").find((u) => u.email === normalized) || null;
+  const row = getDb().prepare("SELECT * FROM users WHERE email = ?").get(normalizeEmail(email));
+  return rowToUser(row);
 }
 
 function findUserById(id) {
-  return readCollection("users").find((u) => u.id === id) || null;
+  const row = getDb().prepare("SELECT * FROM users WHERE id = ?").get(id);
+  return rowToUser(row);
 }
 
 function createUser(email, passwordHash) {
-  const users = readCollection("users");
   const user = {
     id: crypto.randomUUID(),
     email: normalizeEmail(email),
@@ -23,17 +36,27 @@ function createUser(email, passwordHash) {
     activeVaultId: null,
     createdAt: new Date().toISOString(),
   };
-  users.push(user);
-  writeCollection("users", users);
+  getDb()
+    .prepare(
+      `INSERT INTO users (id, email, password_hash, active_vault_id, created_at) VALUES (?, ?, ?, NULL, ?)`
+    )
+    .run(user.id, user.email, user.passwordHash, user.createdAt);
   return user;
 }
 
 function setActiveVault(userId, vaultId) {
-  const users = readCollection("users");
-  const idx = users.findIndex((u) => u.id === userId);
-  if (idx === -1) return;
-  users[idx].activeVaultId = vaultId;
-  writeCollection("users", users);
+  getDb().prepare("UPDATE users SET active_vault_id = ? WHERE id = ?").run(vaultId, userId);
 }
 
-module.exports = { normalizeEmail, findUserByEmail, findUserById, createUser, setActiveVault };
+function setPasswordHash(userId, passwordHash) {
+  getDb().prepare("UPDATE users SET password_hash = ? WHERE id = ?").run(passwordHash, userId);
+}
+
+module.exports = {
+  normalizeEmail,
+  findUserByEmail,
+  findUserById,
+  createUser,
+  setActiveVault,
+  setPasswordHash,
+};

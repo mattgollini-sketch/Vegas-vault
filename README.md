@@ -1,69 +1,98 @@
 # Vegas Vault
 
-A trip dashboard for your next Las Vegas trip: a live countdown, hotel and flight details, a reservation tracker (restaurants, shows, spas, nightclubs, pool), a gambling bankroll tracker, an outfit planner, an auto-built group itinerary, real weather, and a daily "hype" section with a personalized "Tonight in Vegas" preview and a rotating Vegas tip.
+A trip dashboard for a Las Vegas trip: a live countdown, hotel and flight details, reservations, a packing list, a gambling bankroll, group expenses, a map, polls, an itinerary, weather, and a daily hype section.
 
-By default everything is saved locally in your browser (`localStorage`) — no account needed. Optionally, run the included Node server to get an account with cross-device sync, shareable group Vaults, real daily push notifications, and PWA install support.
+Everything works in the browser with no account. If you turn on the included Node server, you also get accounts, sync between phones, a shared group Vault, and daily push notifications.
 
-## Features
+## What you can do
 
-- Live days/hours/minutes/seconds countdown to your trip
-- Hotel card: name, confirmation #, check-in/out, room type, notes
-- Flight info for outbound and return legs
-- Unified reservation tracker for Restaurants, Shows, Spas, Nightclubs, and Pool — each entry has a date, time, and confirmation #
-- Editable essentials packing checklist (pre-seeded with common items)
-- Gambling bankroll tracker (starting amount + a running win/loss log)
-- Outfit planner, per day
-- Group Itinerary — auto-built day-by-day schedule from your hotel dates, flights, reservations, and outfits
-- Live Las Vegas weather forecast (via Open-Meteo, no API key)
-- A daily hype section above the tabs: a countdown-driven banner, a "Tonight in Vegas" preview built from your own dated reservations, and a rotating Vegas tip of the day
-- Optional accounts: email/password sign-in, cross-device sync, and shareable Vaults so a travel group can plan on the same trip together
-- Installable as a PWA, with optional real daily push notifications
-- Data persists across reloads via `localStorage`, and via the server if you're signed in
+- Countdown to the trip in **Las Vegas time**, even if your phone is set to another time zone
+- Hotel, flights, and reservations (restaurants, shows, spas, nightclubs, pool), with a phone number, address, and confirmation link
+- Booking shortcuts on each reservation: OpenTable, Resy, and Ticketmaster search links. These open the other site; Vegas Vault does not book anything for you
+- Flight status opens FlightAware (and the airline's status page when the airline is recognized). Gate and delay numbers are on that site. There is no paid flight API
+- Gambling bankroll with a loss cap, and a group spending budget. The app warns you at 80%, and a signed-in phone can also get a push
+- Group expenses: who paid, an even split, a who-owes-whom list, and a Venmo link when you saved that person's Venmo username
+- Add the whole trip, or one reservation, to Apple or Google Calendar with an `.ics` file
+- A map of the hotel and reservations (OpenStreetMap), with a walking-time estimate
+- Polls and RSVPs inside a shared Vault
+- Offline use. This browser keeps your trip. If you are signed in and the connection drops, edits wait and sync when you are back online
+- Saved / syncing / offline indicator, undo after a delete, and an install prompt (iPhone notifications only work after you add the app to your Home Screen)
+- Export and import a JSON backup
 
-## Running locally (static, no accounts/notifications)
-
-The frontend works standalone with no server:
+## Run it on your computer with no accounts
 
 ```bash
-python3 -m http.server 8000
+python3 -m http.server 8000 --directory public
 ```
 
-Then open `http://localhost:8000` in your browser. Signing in, sync, and push notifications won't work in this mode (there's no backend), but everything else does — your trip just stays in that browser.
+Open `http://localhost:8000`. Sign-in, sync, and push will not work in this mode. The trip stays in that browser.
 
-## Running with the full backend (accounts, sync, sharing, notifications)
+## Run it with accounts, sync, and notifications
 
-The included `server.js` serves the site *and* the API, so it's still a single deploy — just not one that a static host like GitHub Pages can run, since it needs to stay running continuously.
+```bash
+npm install
+npm start
+```
 
-1. `npm install`
-2. (Optional, for push notifications) Generate VAPID keys: `npm run generate-vapid-keys`
-3. Copy `.env.example` to `.env`. Push notifications need `VAPID_PUBLIC_KEY`, `VAPID_PRIVATE_KEY`, and `VAPID_SUBJECT` filled in — accounts and sharing work without any of that.
-4. `npm start` — serves the app at `http://localhost:3000`
+Open `http://localhost:3000`.
+
+Optional push notifications:
+
+1. `npm run generate-vapid-keys`
+2. Copy `.env.example` to `.env`
+3. Fill in `VAPID_PUBLIC_KEY`, `VAPID_PRIVATE_KEY`, and `VAPID_SUBJECT`
+4. Restart `npm start`
+
+Accounts and sharing work without those keys. Push stays off until the keys are set.
 
 ### Accounts and shared Vaults
 
-- Open the Account tab, sign up with an email + password. This creates a private "Vault" (your trip data) tied to that account, and starts syncing it to the server on every change (still cached in `localStorage` too, so it's instant and still works offline).
-- If you already had trip data in that browser before signing up, you'll be offered a one-time import into your new account.
-- Click "Invite someone to this Vault" to get a shareable link. Anyone who opens it, signs up or logs in, and clicks Join becomes a member of the same Vault — you'll both see and edit the same trip data. There's no invite email sent automatically; you send the link yourself (text, email, whatever).
-- If you belong to more than one Vault, a switcher appears in the Account tab.
-- Passwords are hashed with bcrypt; sessions use an httpOnly cookie. There's no email verification or password reset flow, and no rate limiting on login attempts — fine for personal/small-group use, not hardened for public deployment.
+- Account tab → sign up. You get a private Vault and it starts syncing. A copy stays in this browser too.
+- If this browser already had a trip, you can import it once.
+- Only an owner can create an invite. The link works **once** and expires after **7 days**. You can revoke it before anyone uses it. Send the link yourself (text, email, AirDrop).
+- Owners can remove someone or make them an owner. Anyone else can leave. The only owner cannot leave while other people are still in the Vault.
+- If two people edit at the same time, the server rejects the older save. The app merges the two copies and saves again instead of silently wiping one person's work.
+- Passwords are hashed. You can change your password while signed in, and "Log out everywhere" ends the other sessions. There is no emailed password reset, because that needs a mail provider.
 
 ### Push notifications
 
-- Requires being signed in, so the server knows which Vault to notify you about.
-- Click "🔔 Enable daily notifications" and allow the browser's permission prompt.
-- The server sends one push per subscriber per day at `NOTIFY_HOUR` (default 9am server time), built from your Vault's live saved state (countdown status + today's first reservation), and stops once your trip is over.
-- To trigger the daily job immediately instead of waiting for `NOTIFY_HOUR`, `POST /api/send-now`.
+- Sign in, then tap **Enable daily notifications** and allow the browser prompt.
+- On an iPhone, install Vegas Vault to your Home Screen first or iOS will not deliver the push. The app shows that hint.
+- The daily message is sent at `NOTIFY_HOUR` (default 9) in **Pacific time**, using the trip's dates in that time zone. It stops after the trip.
+- A one-time push also goes out when gambling losses or group spending cross 80% of the budget you set.
+- `POST /api/send-now` only works with the header `x-admin-secret` set to `ADMIN_SECRET`. If that variable is empty, the route is turned off.
 
-### Deployment notes
+## Deploy on Railway
 
-- Deploy `server.js` somewhere that stays running (Render, Railway, Fly.io, a small VPS, etc.).
-- All server data (accounts, password hashes, Vaults, sessions, invites, push subscriptions) lives in flat JSON files under `data/` (gitignored) — back that folder up before redeploying, and treat it as sensitive (it contains password hashes and everyone's trip data).
-- Set `NODE_ENV=production` so session cookies get the `Secure` flag (requires HTTPS).
+Use one Railway service for the site and the API. Do this only after the security fixes in this version. The server no longer publishes the project folder, so accounts and the database are not on the public site.
+
+1. Railway → New Project → Deploy from this GitHub repo.
+2. Start command: `npm start`. Node 18 or newer (`engines` in `package.json`).
+3. Variables:
+   - `NODE_ENV=production` (turns on the secure cookie flag; Railway HTTPS covers that)
+   - `VAPID_PUBLIC_KEY`, `VAPID_PRIVATE_KEY`, `VAPID_SUBJECT=mailto:you@example.com`
+   - `NOTIFY_HOUR=9` (9:00 America/Los_Angeles, not the server's UTC clock)
+   - `ADMIN_SECRET` set to a long random string if you want to trigger the daily push by hand
+4. **Storage.** Attach a Railway Volume and set `SQLITE_PATH` to a file on that volume, for example `/data/vegas-vault.sqlite`. Without a volume, every redeploy gives you an empty database and wipes accounts. The app also keeps 7 nightly copies in a `backups` folder next to that file.
+5. Generate a Railway domain. HTTPS is automatic. Push notifications and the installed app need HTTPS.
+6. Health check path: `/healthz`.
+
+If you already had the old JSON files in `data/` (`users.json`, `vaults.json`, and the rest), the first startup copies them into SQLite and renames them to `*.json.imported`. New sessions stay valid because the old session cookie is stored as a hash.
+
+A Netlify-only deploy can host the `public/` folder for the no-account mode. Accounts, sync, and push need this Node server.
+
+## Tests
+
+```bash
+npm test
+```
+
+The tests cover the security fixes: private files are not served, signup does not say whether an email is registered, login is rate limited, push send/unsubscribe require the right person, Vault edits from outside the group are rejected, stale saves conflict, and invites and member removal follow the owner rules.
 
 ## Files
 
-- `index.html`, `style.css`, `app.js` — the frontend (works standalone as a static site)
-- `manifest.json`, `sw.js`, `icons/` — PWA install support and the push-notification service worker
-- `server.js` — Express app: static file serving, auth/vault/invite/push API routes, and the daily notification cron
-- `db.js`, `auth.js`, `users.js`, `vaults.js` — small backend modules for JSON-file storage, sessions/passwords, and Vault/membership/invite logic
-- `.env.example` — template for the VAPID keys (push) the backend can use
+- `public/` — the site (HTML, CSS, JavaScript, service worker, icons). This is the only folder the server hands to browsers
+- `server.js` — accounts, Vaults, invites, push, and the daily job
+- `db.js` — SQLite database (`SQLITE_PATH` or `DATA_DIR`)
+- `auth.js`, `users.js`, `vaults.js`, `notify.js` — passwords, sessions, sharing, and notifications
+- `.env.example` — the settings Railway or a local `.env` file can use
