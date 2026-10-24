@@ -719,6 +719,7 @@ Object.entries(hotelFieldMap).forEach(([elId, key]) => {
     refreshDerived();
     renderItinerary();
     renderHotelLinks();
+    renderResortMaps();
   });
 });
 
@@ -868,7 +869,7 @@ function renderReservations() {
       hint.textContent = suggestion;
       links.appendChild(hint);
     }
-    bookingLinks(item).forEach((link) => links.appendChild(makeExternalLink(link.href, link.label)));
+    bookingLinks(item).forEach((link) => links.appendChild(makeExternalLink(link.href, link.label, link.title)));
     if (item.phone) links.appendChild(makeExternalLink(`tel:${item.phone.replace(/[^\d+]/g, "")}`, "Call"));
     if (links.childNodes.length) body.appendChild(links);
 
@@ -1788,15 +1789,21 @@ function safeHttpUrl(value) {
   return "";
 }
 
-function makeExternalLink(href, label) {
+function makeExternalLink(href, label, title) {
   const link = document.createElement("a");
   link.href = href;
   link.textContent = label;
+  if (title) link.title = title;
   if (!href.startsWith("tel:")) {
     link.target = "_blank";
     link.rel = "noopener noreferrer";
   }
   return link;
+}
+
+function propertyMapLinkFor(name, address) {
+  if (!window.VegasResorts) return null;
+  return window.VegasResorts.linkForPlace(name, address);
 }
 
 function bookingLinks(item) {
@@ -1806,6 +1813,8 @@ function bookingLinks(item) {
   if (window.VegasAffiliates) {
     window.VegasAffiliates.linksForReservation(item, affiliateConfig).forEach((link) => links.push(link));
   }
+  const propertyMap = propertyMapLinkFor(item.name, item.address);
+  if (propertyMap) links.push({ href: propertyMap.href, label: propertyMap.label, title: propertyMap.note });
   const query = encodeURIComponent(`${item.name || "Las Vegas"} Las Vegas`);
   links.push({ href: `https://www.google.com/search?q=${query}`, label: "Search" });
   return links;
@@ -1896,6 +1905,8 @@ function renderHotelLinks() {
         el.appendChild(makeExternalLink(link.href, link.label));
       });
     }
+    const propertyMap = propertyMapLinkFor(state.hotel.name, state.hotel.address);
+    if (propertyMap) el.appendChild(makeExternalLink(propertyMap.href, propertyMap.label, propertyMap.note));
   }
 }
 
@@ -2353,9 +2364,43 @@ function renderMapIfVisible() {
   if (panel && panel.classList.contains("active")) renderMap();
 }
 
+function renderResortMaps() {
+  const list = document.getElementById("resortMapList");
+  if (!list || !window.VegasResorts) return;
+  list.innerHTML = "";
+  const matches = window.VegasResorts.resortsForTrip(state.hotel, state.reservations);
+  if (!matches.length) {
+    const empty = document.createElement("li");
+    const text = document.createElement("span");
+    text.textContent = "Add a Strip resort as the hotel or a reservation to see its map link.";
+    empty.appendChild(text);
+    list.appendChild(empty);
+    return;
+  }
+  matches.forEach((resort) => {
+    const info = window.VegasResorts.propertyMapLink(resort);
+    const li = document.createElement("li");
+    const body = document.createElement("div");
+    body.className = "item-body";
+    const name = document.createElement("span");
+    name.className = "item-text";
+    name.textContent = resort.name;
+    const meta = document.createElement("span");
+    meta.className = "item-meta";
+    meta.textContent = info.note;
+    const links = document.createElement("div");
+    links.className = "link-row";
+    links.appendChild(makeExternalLink(info.href, info.label, info.note));
+    body.append(name, meta, links);
+    li.appendChild(body);
+    list.appendChild(li);
+  });
+}
+
 function renderMap() {
   const status = document.getElementById("mapStatus");
   const points = mapPoints();
+  renderResortMaps();
   renderWalkList(points);
   if (typeof L === "undefined") {
     if (status) status.textContent = "The map needs a connection to load. Walking estimates below still work for places this browser already knows.";
