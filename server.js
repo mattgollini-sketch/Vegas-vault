@@ -14,6 +14,8 @@ const auth = require("./auth");
 const users = require("./users");
 const vaults = require("./vaults");
 const notify = require("./notify");
+const billing = require("./billing");
+const affiliates = require("./public/affiliates");
 const { authRateLimit, inviteRateLimit, geocodeRateLimit } = require("./rate-limit");
 
 const PORT = process.env.PORT || 3000;
@@ -64,6 +66,28 @@ function createApp() {
     })
   );
 
+  // Stripe signs the raw body. This route has to run before express.json()
+  // parses it, and before the browser origin check (Stripe does not send one).
+  app.post("/api/stripe/webhook", express.raw({ type: "application/json" }), (req, res) => {
+    if (!billing.paymentsConfigured()) {
+      return res.status(503).json({ error: "Stripe is not configured." });
+    }
+    let event;
+    try {
+      const raw = Buffer.isBuffer(req.body) ? req.body : Buffer.from(typeof req.body === "string" ? req.body : "");
+      event = billing.constructEvent(raw, req.get("stripe-signature") || "");
+    } catch (err) {
+      return res.status(400).json({ error: "Invalid Stripe signature." });
+    }
+    try {
+      const result = billing.handleStripeEvent(event);
+      res.json({ ok: true, received: true, ...result });
+    } catch (err) {
+      console.error("Stripe webhook failed:", err.message);
+      res.status(500).json({ error: "Webhook handler failed." });
+    }
+  });
+
   app.use(express.json({ limit: "512kb" }));
   app.use(cookieParser());
   app.use(auth.attachUser);
@@ -73,6 +97,18 @@ function createApp() {
   app.get("/healthz", (req, res) => {
     getDb();
     res.json({ ok: true });
+  });
+
+  app.get("/api/billing", (req, res) => {
+    res.json(billing.publicBilling());
+  });
+
+  app.get("/api/affiliates", (req, res) => {
+    const config = affiliates.configFromEnv(process.env);
+    res.json({
+      ...config,
+      disclosure: affiliates.hasAny(config) ? affiliates.DISCLOSURE : "",
+    });
   });
 
   const limitAuth = authRateLimit();
@@ -172,6 +208,11 @@ function createApp() {
     if (baseVersion == null || Number.isNaN(Number(baseVersion))) {
       return res.status(400).json({ error: "Missing baseVersion. Reload this Vault and try again." });
     }
+    const existing = vaults.getVault(req.params.id);
+    if (existing && Number(baseVersion) === existing.version) {
+      const blocked = billing.assertGroupSaveAllowed(existing, state);
+      if (blocked) return res.status(402).json(blocked);
+    }
     const saved = vaults.saveVaultState(req.params.id, state, baseVersion, req.user.id);
     if (saved.error === "missing") return res.status(404).json({ error: "Vault not found." });
     if (saved.error === "invalid") return res.status(400).json({ error: saved.message });
@@ -241,9 +282,33 @@ function createApp() {
     res.json(meResponse(req.user));
   });
 
+  app.post("/api/vault/:id/checkout", auth.requireAuth, async (req, res) => {
+    const membership = requireOwner(req, res);
+    if (!membership) return;
+    const vault = vaults.getVault(req.params.id);
+    if (!vault) return res.status(404).json({ error: "Vault not found." });
+    if (!billing.paywallActive()) return res.json({ ok: true, devMode: true, unlocked: true });
+    if (vault.groupUnlocked) return res.json({ ok: true, alreadyUnlocked: true });
+    try {
+      const origin = publicOrigin(req);
+      const session = await billing.createCheckoutSession({
+        vaultId: vault.id,
+        successUrl: `${origin}/?unlock=success`,
+        cancelUrl: `${origin}/?unlock=cancel`,
+      });
+      if (!session || !session.url) return res.status(502).json({ error: "Stripe did not return a checkout link." });
+      res.json({ ok: true, url: session.url });
+    } catch (err) {
+      console.error("Checkout session failed:", err.message);
+      res.status(502).json({ error: "Checkout could not be started. Try again in a moment." });
+    }
+  });
+
   app.post("/api/vault/:id/invite", limitInvite, auth.requireAuth, (req, res) => {
     const membership = requireOwner(req, res);
     if (!membership) return;
+    const vault = vaults.getVault(req.params.id);
+    if (vault && !billing.vaultUnlocked(vault)) return res.status(402).json(billing.lockedResponse());
     const invite = vaults.createInvite(req.params.id, req.user.id);
     res.status(201).json({
       id: invite.id,
@@ -356,6 +421,7 @@ function createApp() {
     res.status(500).json({ error: "Something went wrong." });
   });
 
+  billing.paywallActive();
   return app;
 }
 
@@ -377,7 +443,14 @@ function vaultPayload(vault, role) {
     version: vault.version,
     updatedAt: vault.updatedAt,
     updatedByEmail: vault.updatedByEmail,
+    groupUnlocked: billing.vaultUnlocked(vault),
   };
+}
+
+function publicOrigin(req) {
+  const forwarded = req.get("x-forwarded-proto");
+  const proto = forwarded ? String(forwarded).split(",")[0].trim() : req.protocol;
+  return `${proto || "http"}://${req.get("host")}`;
 }
 
 function requireOwner(req, res) {

@@ -27,6 +27,7 @@ CREATE TABLE IF NOT EXISTS vaults (
   name TEXT NOT NULL,
   state_json TEXT NOT NULL DEFAULT '{}',
   version INTEGER NOT NULL DEFAULT 1,
+  group_unlocked INTEGER NOT NULL DEFAULT 0,
   updated_at TEXT NOT NULL,
   updated_by TEXT,
   created_at TEXT NOT NULL
@@ -193,6 +194,28 @@ function purgeExpired(db) {
   db.prepare("DELETE FROM invites WHERE expires_at < ? AND used_at IS NULL AND revoked_at IS NULL").run(now);
 }
 
+function ensureGroupUnlockColumn(db) {
+  const columns = db.prepare("PRAGMA table_info(vaults)").all();
+  if (!columns.some((column) => column.name === "group_unlocked")) {
+    db.exec("ALTER TABLE vaults ADD COLUMN group_unlocked INTEGER NOT NULL DEFAULT 0");
+  }
+}
+
+// Vaults that were already shared before the one-time unlock existed stay open.
+// A locked vault cannot gain a second member or an invite, so repeating this
+// on startup does not unlock a vault that still needs to be paid for.
+function grandfatherSharedVaults(db) {
+  db.exec(`
+    UPDATE vaults SET group_unlocked = 1
+    WHERE group_unlocked = 0
+      AND id IN (
+        SELECT vault_id FROM memberships GROUP BY vault_id HAVING COUNT(*) > 1
+        UNION
+        SELECT vault_id FROM invites
+      )
+  `);
+}
+
 function openDatabase() {
   const file = resolveDbPath();
   if (dbInstance && dbPath === file) return dbInstance;
@@ -205,7 +228,9 @@ function openDatabase() {
   db.pragma("journal_mode = WAL");
   db.pragma("foreign_keys = ON");
   db.exec(SCHEMA);
+  ensureGroupUnlockColumn(db);
   importLegacyJson(db, file);
+  grandfatherSharedVaults(db);
   purgeExpired(db);
   dbInstance = db;
   dbPath = file;

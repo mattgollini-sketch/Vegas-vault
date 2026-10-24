@@ -474,6 +474,23 @@ footer {
   color: var(--teal);
   font-size: 0.82rem;
 }
+.book-suggest {
+  color: var(--muted);
+  font-size: 0.78rem;
+}
+.unlock-panel {
+  border: 1px solid var(--card-border);
+  border-radius: 12px;
+  padding: 0.85rem 1rem;
+  margin: 0.25rem 0 1rem;
+  background: rgba(255, 207, 92, 0.06);
+}
+.unlock-panel p { margin: 0 0 0.7rem; }
+#affiliateDisclosure {
+  display: block;
+  margin-top: 0.75rem;
+  text-align: center;
+}
 .item-actions { display: flex; flex-wrap: wrap; gap: 0.35rem; margin-top: 0.35rem; }
 .item-actions button, .tiny-btn {
   background: transparent;

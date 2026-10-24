@@ -76,6 +76,7 @@
       <button class="tab-btn" data-tab="essentials">🎒 Essentials</button>
       <button class="tab-btn" data-tab="restaurants" data-category="restaurants">🍽️ Restaurants</button>
       <button class="tab-btn" data-tab="shows" data-category="shows">🎭 Shows</button>
+      <button class="tab-btn" data-tab="tours" data-category="tours">🎟️ Tours</button>
       <button class="tab-btn" data-tab="spas" data-category="spas">💆 Spas</button>
       <button class="tab-btn" data-tab="nightclubs" data-category="nightclubs">🥂 Nightclubs</button>
       <button class="tab-btn" data-tab="pool" data-category="pool">🏊 Pool</button>
@@ -159,6 +160,10 @@
           <button type="button" id="inviteShareBtn" class="secondary-btn">Share</button>
         </div>
         <p class="panel-hint">Invite links work once, expire after 7 days, and only an owner can create or revoke them.</p>
+        <div id="unlockPanel" class="unlock-panel" hidden>
+          <p id="unlockCopy"></p>
+          <button type="button" id="unlockBtn">Unlock group tools</button>
+        </div>
         <ul class="checklist" id="inviteList"></ul>
 
         <h3>Change password</h3>
@@ -269,6 +274,7 @@
     <section class="panel" id="panel-expenses">
       <h2>💸 Group expenses</h2>
       <p class="panel-hint">Add everyone on the trip, log who paid, and Vegas Vault will show who owes whom. Venmo links use the username you save — no Venmo login is built in.</p>
+      <p class="panel-hint" id="expenseUnlockNote" hidden></p>
       <label>Spending budget cap ($)
         <input type="number" id="spendingBudget" step="1" min="0" />
       </label>
@@ -328,6 +334,7 @@
     <section class="panel" id="panel-polls">
       <h2>🗳️ Polls and RSVPs</h2>
       <p class="panel-hint">Votes are saved in the shared Vault. RSVP buttons on each reservation use the same name.</p>
+      <p class="panel-hint" id="pollUnlockNote" hidden></p>
       <label class="vault-switcher-label" for="pollNameInput">Your name
         <input type="text" id="pollNameInput" maxlength="40" placeholder="e.g. Matt" />
       </label>
@@ -363,6 +370,7 @@
     </div>
     <span id="notifyStatus" class="panel-hint"></span>
     <span id="footerSaveNote">Everything is saved in this browser. Sign in to sync it with your group.</span>
+    <span id="affiliateDisclosure" class="panel-hint" hidden></span>
   </footer>
 
   <div id="toast" class="toast" hidden>
@@ -373,6 +381,7 @@
   <script src="time.js"></script>
   <script src="merge.js"></script>
   <script src="settle.js"></script>
+  <script src="affiliates.js"></script>
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin="anonymous"></script>
   <script src="app.js"></script>
 </body>
