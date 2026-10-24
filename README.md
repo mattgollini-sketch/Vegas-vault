@@ -14,6 +14,7 @@ Everything works in the browser with no account. If you turn on the included Nod
 - Group expenses: who paid, an even split, a who-owes-whom list, and a Venmo link when you saved that person's Venmo username
 - Add the whole trip, or one reservation, to Apple or Google Calendar with an `.ics` file
 - A map of the hotel and reservations (OpenStreetMap), with a walking-time estimate
+- A Property map button when the hotel or a reservation is a major Strip resort. It opens that resort’s own map page or PDF. If the resort does not publish one that loads, the button opens the resort’s website, or a Google Maps search. Vegas Vault does not copy or host the maps. The Map tab also lists them under Resort maps
 - Polls and RSVPs inside a shared Vault. Planning alone stays free. Sharing a Vault (an invite, a poll, or an expense split with more than one person) can require a one-time unlock per Vault when Stripe is turned on
 - Offline use. This browser keeps your trip. If you are signed in and the connection drops, edits wait and sync when you are back online
 - Saved / syncing / offline indicator, undo after a delete, and an install prompt (iPhone notifications only work after you add the app to your Home Screen)
@@ -135,7 +136,7 @@ A Netlify-only deploy can host the `public/` folder for the no-account mode. Acc
 npm test
 ```
 
-The tests cover the security fixes: private files are not served, signup does not say whether an email is registered, login is rate limited, push send/unsubscribe require the right person, Vault edits from outside the group are rejected, stale saves conflict, and invites and member removal follow the owner rules. They also check affiliate links with and without IDs, the group paywall, Stripe Checkout setup, the webhook that unlocks a Vault, and the free pass for Vaults that were already shared.
+The tests cover the security fixes: private files are not served, signup does not say whether an email is registered, login is rate limited, push send/unsubscribe require the right person, Vault edits from outside the group are rejected, stale saves conflict, and invites and member removal follow the owner rules. They also check affiliate links with and without IDs, the group paywall, Stripe Checkout setup, the webhook that unlocks a Vault, and the free pass for Vaults that were already shared. Resort map tests check fuzzy names such as “Bellagio Hotel & Casino,” one link per resort, and that every link is an official resort site or a Google Maps search.
 
 ## Files
 
@@ -143,6 +144,7 @@ The tests cover the security fixes: private files are not served, signup does no
 - `server.js` — accounts, Vaults, invites, push, Stripe webhook, and the daily job
 - `billing.js` — the one-time group unlock and Checkout Session
 - `public/affiliates.js` — booking links. IDs are read from the environment at request time
+- `public/resorts.js` — Strip resort matching and official property-map links
 - `db.js` — SQLite database (`SQLITE_PATH` or `DATA_DIR`)
 - `auth.js`, `users.js`, `vaults.js`, `notify.js` — passwords, sessions, sharing, and notifications
 - `.env.example` — the settings Railway or a local `.env` file can use, including Stripe and affiliate IDs
