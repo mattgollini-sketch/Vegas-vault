@@ -1,4 +1,4 @@
-const CACHE_NAME = "vegas-vault-v4";
+const CACHE_NAME = "vegas-vault-v5";
 const APP_SHELL = [
   "./",
   "index.html",
@@ -7,6 +7,7 @@ const APP_SHELL = [
   "time.js",
   "merge.js",
   "settle.js",
+  "affiliates.js",
   "manifest.json",
   "icons/icon-192.png",
   "icons/icon-512.png",

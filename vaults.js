@@ -33,7 +33,13 @@ function parseVault(row) {
     updatedBy: row.updated_by,
     updatedByEmail,
     createdAt: row.created_at,
+    groupUnlocked: Boolean(row.group_unlocked),
   };
+}
+
+function unlockVault(vaultId) {
+  const result = getDb().prepare("UPDATE vaults SET group_unlocked = 1 WHERE id = ?").run(vaultId);
+  return result.changes > 0 ? getVault(vaultId) : null;
 }
 
 function createVault(name) {
@@ -293,4 +299,5 @@ module.exports = {
   revokeInvite,
   getInvite,
   acceptInvite,
+  unlockVault,
 };

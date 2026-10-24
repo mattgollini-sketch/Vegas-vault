@@ -3,6 +3,7 @@ const STORAGE_KEY = "vegasVaultData";
 const CATEGORY_META = {
   restaurants: { label: "🍽️ Restaurants", hint: "Your favorite spots to eat." },
   shows: { label: "🎭 Shows", hint: "Shows you want to catch." },
+  tours: { label: "🎟️ Tours", hint: "Tours and experiences to book." },
   spas: { label: "💆 Spas", hint: "Spa appointments to book or track." },
   nightclubs: { label: "🥂 Nightclubs", hint: "Club reservations and tables." },
   pool: { label: "🏊 Pool", hint: "Pool / dayclub plans and status." },
@@ -61,6 +62,7 @@ const defaultData = {
     makeReservation("shows", "Cirque du Soleil — O"),
     makeReservation("shows", "Absinthe"),
     makeReservation("shows", "David Copperfield"),
+    makeReservation("tours", "Grand Canyon day tour"),
     makeReservation("spas", "Qua Baths & Spa (Caesars Palace)"),
     makeReservation("spas", "Sahra Spa (Wynn)"),
     makeReservation("nightclubs", "Omnia (Caesars Palace)"),
@@ -187,6 +189,11 @@ function loadLocalData() {
 
 let serverSyncTimer = null;
 let knownVersion = null;
+let billingConfig = { paymentsEnabled: false, price: "7.99", priceLabel: "$7.99", currency: "usd" };
+let affiliateConfig = {};
+let currentVaultUnlocked = true;
+let currentVaultRole = "";
+let groupSyncBlocked = false;
 let lastSyncedSnapshot = null;
 let syncInFlight = false;
 let syncQueued = false;
@@ -323,7 +330,7 @@ async function queueBackgroundSync() {
 }
 
 async function syncStateToServer() {
-  if (!currentVaultId) return;
+  if (!currentVaultId || groupSyncBlocked) return;
   if (!navigator.onLine) {
     setSyncStatus("pending", "Offline — will sync");
     await rememberOutbox();
@@ -363,6 +370,16 @@ async function syncStateToServer() {
         showToast("Someone else edited this Vault. Your changes were merged.");
         keepGoing = true;
         continue;
+      }
+      if (res.status === 402) {
+        const data = await res.json().catch(() => ({}));
+        currentVaultUnlocked = false;
+        groupSyncBlocked = true;
+        syncQueued = false;
+        renderUnlockChrome();
+        setSyncStatus("bad", "Group tools need a one-time unlock before this can sync.");
+        showToast(data.error || unlockMessage());
+        return;
       }
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));
@@ -844,6 +861,13 @@ function renderReservations() {
 
     const links = document.createElement("div");
     links.className = "link-row";
+    const suggestion = window.VegasAffiliates && window.VegasAffiliates.bookSuggestion(item.category);
+    if (suggestion) {
+      const hint = document.createElement("span");
+      hint.className = "book-suggest";
+      hint.textContent = suggestion;
+      links.appendChild(hint);
+    }
     bookingLinks(item).forEach((link) => links.appendChild(makeExternalLink(link.href, link.label)));
     if (item.phone) links.appendChild(makeExternalLink(`tel:${item.phone.replace(/[^\d+]/g, "")}`, "Call"));
     if (links.childNodes.length) body.appendChild(links);
@@ -1405,6 +1429,7 @@ function renderAccountView() {
       authMode === "signup" ? "Already have an account? Log in" : "New here? Sign up";
   }
   renderAccountBar();
+  renderUnlockChrome();
 }
 
 function setAccountFromMeResponse(data) {
@@ -1420,6 +1445,9 @@ async function loadActiveVaultFromServer() {
     if (!res.ok) throw new Error("Failed to load Vault");
     const data = await res.json();
     knownVersion = data.version;
+    currentVaultUnlocked = Boolean(data.groupUnlocked);
+    currentVaultRole = data.role || currentVaultRole;
+    if (currentVaultUnlocked) groupSyncBlocked = false;
     const serverState = mergeWithDefaults(data.state);
     lastSyncedSnapshot = structuredClone(serverState);
     updateEditedLabel(data.updatedAt, data.updatedByEmail);
@@ -1518,6 +1546,9 @@ document.getElementById("logoutBtn").addEventListener("click", async () => {
   currentUser = null;
   currentVaultId = null;
   currentVaults = [];
+  currentVaultUnlocked = true;
+  currentVaultRole = "";
+  groupSyncBlocked = false;
   state = loadLocalData();
   populateAllFields();
   renderAccountView();
@@ -1544,9 +1575,18 @@ vaultSwitcher.addEventListener("change", async () => {
 
 document.getElementById("inviteBtn").addEventListener("click", async () => {
   if (!currentVaultId) return;
+  if (groupPaywallOn()) {
+    promptUnlock();
+    return;
+  }
   try {
     const res = await fetch(`/api/vault/${currentVaultId}/invite`, { method: "POST" });
     const data = await res.json();
+    if (res.status === 402) {
+      currentVaultUnlocked = false;
+      promptUnlock(data.error);
+      return;
+    }
     if (!res.ok) throw new Error(data.error || "Failed to create invite");
     const wrap = document.getElementById("inviteLinkWrap");
     const input = document.getElementById("inviteLinkInput");
@@ -1737,8 +1777,10 @@ function updateEditedLabel(updatedAt, email) {
 }
 
 function safeHttpUrl(value) {
+  const text = String(value || "").trim();
+  if (!text) return "";
   try {
-    const url = new URL(value, window.location.href);
+    const url = new URL(text, window.location.href);
     if (url.protocol === "https:" || url.protocol === "http:" || url.protocol === "tel:") return url.href;
   } catch (e) {
     return "";
@@ -1761,14 +1803,10 @@ function bookingLinks(item) {
   const links = [];
   const own = safeHttpUrl(item.link || "");
   if (own && !own.startsWith("tel:")) links.push({ href: own, label: "Confirmation" });
-  const query = encodeURIComponent(`${item.name} Las Vegas`);
-  if (item.category === "restaurants") {
-    links.push({ href: `https://www.opentable.com/s?term=${query}`, label: "OpenTable" });
-    links.push({ href: `https://resy.com/cities/las-vegas-nv?query=${encodeURIComponent(item.name)}`, label: "Resy" });
+  if (window.VegasAffiliates) {
+    window.VegasAffiliates.linksForReservation(item, affiliateConfig).forEach((link) => links.push(link));
   }
-  if (item.category === "shows" || item.category === "nightclubs") {
-    links.push({ href: `https://www.ticketmaster.com/search?q=${query}`, label: "Ticketmaster" });
-  }
+  const query = encodeURIComponent(`${item.name || "Las Vegas"} Las Vegas`);
   links.push({ href: `https://www.google.com/search?q=${query}`, label: "Search" });
   return links;
 }
@@ -1849,6 +1887,15 @@ function renderHotelLinks() {
   if (state.hotel.name || state.hotel.address) {
     const query = encodeURIComponent(state.hotel.address || `${state.hotel.name} Las Vegas`);
     el.appendChild(makeExternalLink(`https://www.google.com/maps/search/?api=1&query=${query}`, "Open address"));
+    if (window.VegasAffiliates) {
+      const hint = document.createElement("span");
+      hint.className = "book-suggest";
+      hint.textContent = window.VegasAffiliates.bookSuggestion("hotel");
+      el.appendChild(hint);
+      window.VegasAffiliates.hotelLinks(state.hotel.name || state.hotel.address, affiliateConfig).forEach((link) => {
+        el.appendChild(makeExternalLink(link.href, link.label));
+      });
+    }
   }
 }
 
@@ -2603,6 +2650,9 @@ function setupExtraControls() {
     currentUser = null;
     currentVaultId = null;
     currentVaults = [];
+    currentVaultUnlocked = true;
+    currentVaultRole = "";
+    groupSyncBlocked = false;
     knownVersion = null;
     state = loadLocalData();
     populateAllFields();
@@ -2627,6 +2677,10 @@ function setupExtraControls() {
   document.getElementById("personAdd").addEventListener("click", () => {
     const name = document.getElementById("personName").value.trim();
     if (!name) return;
+    if (groupPaywallOn() && state.people.length >= 1) {
+      promptUnlock("Splitting with more than one person is part of the group unlock.");
+      return;
+    }
     state.people.push({
       id: crypto.randomUUID(),
       name,
@@ -2648,6 +2702,14 @@ function setupExtraControls() {
       return;
     }
     const participants = Array.from(document.querySelectorAll(".split-person:checked")).map((box) => box.value);
+    const previousMax = (state.expenses || []).reduce((max, expense) => {
+      const count = Array.isArray(expense.participants) ? expense.participants.filter(Boolean).length : 0;
+      return Math.max(max, count);
+    }, 0);
+    if (groupPaywallOn() && participants.length > 1 && participants.length > previousMax) {
+      promptUnlock("Splitting an expense with more than one person is part of the group unlock.");
+      return;
+    }
     state.expenses.push({
       id: crypto.randomUUID(),
       date: document.getElementById("expenseDate").value,
@@ -2674,6 +2736,10 @@ function setupExtraControls() {
     const options = document.getElementById("pollOptions").value.split("\n").map((line) => line.trim()).filter(Boolean);
     if (!question || options.length < 2) {
       showToast("Add a question and at least two choices.");
+      return;
+    }
+    if (groupPaywallOn()) {
+      promptUnlock("Polls are part of the group unlock.");
       return;
     }
     state.polls.push({
@@ -2743,6 +2809,136 @@ function setupExtraControls() {
   }
   setupInstallPrompt();
   if (!currentVaultId) setSyncStatus("ok", "Saved on this device");
+
+  document.getElementById("unlockBtn").addEventListener("click", startGroupCheckout);
+}
+
+function groupPaywallOn() {
+  return Boolean(currentUser && billingConfig.paymentsEnabled && !currentVaultUnlocked);
+}
+
+function activeVaultRole() {
+  const vault = (currentVaults || []).find((item) => item.id === currentVaultId);
+  return (vault && vault.role) || currentVaultRole || "";
+}
+
+function unlockMessage() {
+  const price = billingConfig.priceLabel || "$7.99";
+  if (activeVaultRole() === "owner") {
+    return `Sharing this Vault is a one-time unlock (${price}). Invites, polls, and splitting an expense with more than one person are included. A trip you keep to yourself stays free.`;
+  }
+  return `Ask the Vault owner to unlock group tools (${price}, one time). A trip you keep to yourself stays free.`;
+}
+
+function renderUnlockChrome() {
+  const panel = document.getElementById("unlockPanel");
+  const copy = document.getElementById("unlockCopy");
+  const button = document.getElementById("unlockBtn");
+  const locked = groupPaywallOn();
+  if (panel) panel.hidden = !locked;
+  if (copy) copy.textContent = locked ? unlockMessage() : "";
+  if (button) {
+    button.hidden = !locked || activeVaultRole() !== "owner";
+    button.textContent = `Unlock group tools — ${billingConfig.priceLabel || "$7.99"}`;
+  }
+  const note = locked ? unlockMessage() : "";
+  ["expenseUnlockNote", "pollUnlockNote"].forEach((id) => {
+    const el = document.getElementById(id);
+    if (!el) return;
+    el.hidden = !locked;
+    el.textContent = note;
+  });
+}
+
+function promptUnlock(message) {
+  renderUnlockChrome();
+  showToast(message || unlockMessage());
+  const panel = document.getElementById("unlockPanel");
+  if (panel && !panel.hidden) panel.scrollIntoView({ block: "nearest" });
+}
+
+async function startGroupCheckout() {
+  if (!currentVaultId) return;
+  if (activeVaultRole() !== "owner") {
+    showToast(unlockMessage());
+    return;
+  }
+  try {
+    const response = await fetch(`/api/vault/${currentVaultId}/checkout`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: "{}",
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      showToast(data.error || "Checkout could not be started.");
+      return;
+    }
+    if (data.url) {
+      window.location.href = data.url;
+      return;
+    }
+    if (data.alreadyUnlocked || data.devMode) {
+      currentVaultUnlocked = true;
+      groupSyncBlocked = false;
+      renderUnlockChrome();
+      showToast("Group tools are unlocked.");
+      syncStateToServer();
+    }
+  } catch (e) {
+    showToast("Checkout could not be started.");
+  }
+}
+
+function renderDisclosure() {
+  const el = document.getElementById("affiliateDisclosure");
+  if (!el || !window.VegasAffiliates) return;
+  const text = affiliateConfig.disclosure || (window.VegasAffiliates.hasAny(affiliateConfig) ? window.VegasAffiliates.DISCLOSURE : "");
+  el.hidden = !text;
+  el.textContent = text;
+}
+
+async function loadPublicConfig() {
+  try {
+    const [billingRes, affiliateRes] = await Promise.all([fetch("/api/billing"), fetch("/api/affiliates")]);
+    if (billingRes.ok) billingConfig = await billingRes.json();
+    if (affiliateRes.ok) affiliateConfig = await affiliateRes.json();
+  } catch (e) {
+    // The static no-account mode has no API. Links stay plain and group tools stay local.
+  }
+  renderDisclosure();
+  renderUnlockChrome();
+  renderHotelLinks();
+  renderReservations();
+}
+
+function consumeUnlockQuery() {
+  const params = new URLSearchParams(location.search);
+  if (!params.has("unlock")) return;
+  const status = params.get("unlock");
+  params.delete("unlock");
+  const next = params.toString();
+  history.replaceState({}, "", `${location.pathname}${next ? `?${next}` : ""}${location.hash}`);
+  if (status === "cancel") {
+    showToast("Checkout canceled. Planning on your own stays free.");
+    return;
+  }
+  if (status !== "success") return;
+  showToast("Payment received. Group tools turn on as soon as Stripe confirms the payment.");
+  let tries = 0;
+  const timer = setInterval(async () => {
+    tries += 1;
+    await refreshMe();
+    if (currentVaultUnlocked || tries >= 6) {
+      clearInterval(timer);
+      if (currentVaultUnlocked) {
+        groupSyncBlocked = false;
+        renderUnlockChrome();
+        showToast("Group tools are unlocked for this Vault.");
+        syncStateToServer();
+      }
+    }
+  }, 2000);
 }
 
 // ---------- Initial render ----------
@@ -2758,4 +2954,6 @@ renderTipOfDay();
 updateCountdown();
 refreshDerived();
 setupExtraControls();
+loadPublicConfig();
+consumeUnlockQuery();
 refreshMe();
