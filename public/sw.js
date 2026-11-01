@@ -1,4 +1,4 @@
-const CACHE_NAME = "vegas-vault-v6";
+const CACHE_NAME = "vegas-vault-v7";
 const APP_SHELL = [
   "./",
   "index.html",
